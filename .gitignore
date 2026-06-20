@@ -1,0 +1,8 @@
+.omx/
+.codex/
+.env
+.env.*
+*.log
+*.tmp
+Thumbs.db
+desktop.ini
