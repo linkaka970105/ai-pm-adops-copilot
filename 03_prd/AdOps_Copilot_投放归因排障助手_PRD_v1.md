@@ -197,6 +197,8 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 ## 5.1 端到端业务流程
 
+![投放归因排障端到端业务流程图](assets/adops_attribution_workflow.svg)
+
 ```text
 问题输入
   -> 会话创建
@@ -216,6 +218,8 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 ```
 
 ## 5.2 系统架构
+
+![投放归因排障系统架构图](assets/adops_attribution_architecture.svg)
 
 ```text
 [英文业务前台]
@@ -255,6 +259,8 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 ```
 
 ## 5.3 智能体状态机
+
+![投放归因排障智能体状态机图](assets/adops_attribution_state_machine.svg)
 
 | 状态 | 说明 | 下一状态 |
 | --- | --- | --- |
@@ -1130,9 +1136,47 @@ L4 业务资产层
 | 双语控制 | 内部上下文可中英混合，用户界面按入口语言输出 |
 | 版本可追溯 | 每次调用记录 prompt_id、prompt_version、model、temperature |
 
-## 15.3 总控智能体 Prompt 模板
+## 15.3 Prompt 变量与上下文填充规范
+
+Prompt 执行时不直接把用户原始问题丢给模型，而是由总控层先完成上下文组装。每个场景智能体只能读取自己需要的上下文，缺失字段必须显式写入 `missing_fields` 或 `required_followups`，不能让模型自行假设。
+
+| 变量 | 含义 | 来源 | 缺失处理 |
+| --- | --- | --- | --- |
+| `{{current_time}}` | 当前调用时间和默认时区 | 系统时间、用户区域配置 | 使用系统默认时区，并在输出中标明 |
+| `{{user_query}}` | 用户原始问题 | Chat、Campaign 侧边栏、工单入口 | 不可缺失 |
+| `{{conversation_context}}` | 多轮对话上下文 | 会话历史 | 没有历史时传空数组 |
+| `{{user_profile}}` | 用户角色、团队、语言偏好 | IAM、用户配置 | 缺失时按最小权限处理 |
+| `{{permission_scope}}` | 用户可访问账户、客户、区域、工具权限 | 权限系统 | 缺失时禁止工具调用 |
+| `{{phase_scope}}` | 当前 PRD 范围边界 | 产品配置 | 范围外问题进入 out_of_scope |
+| `{{available_tools}}` | 当前可调用工具注册表 | Tool Gateway | 缺失时只能知识检索和追问 |
+| `{{retrieved_knowledge}}` | RAG 召回的 SOP、口径、历史案例 | 检索服务 | 无召回时必须说明证据不足 |
+| `{{tool_outputs}}` | 工具网关返回的标准化结果 | 报表、归因、账户、postback 工具 | 工具失败时输出失败原因和人工处理入口 |
+| `{{evidence_objects}}` | 可引用证据对象 | 证据归一化层 | 没有证据时不得输出确定结论 |
+
+## 15.4 总控智能体 Prompt 模板
+
+### 15.4.1 变量填充
+
+| 变量 | 填入内容 | 主要用途 |
+| --- | --- | --- |
+| `{{current_time}}` | 当前日期、时间、默认时区 | 解析 yesterday、last 7 days 等相对时间 |
+| `{{user_query}}` | 用户原始问题 | 识别意图和实体 |
+| `{{conversation_context}}` | 最近多轮对话摘要 | 处理省略指代和上下文继承 |
+| `{{user_profile}}` | 用户角色、团队、语言偏好 | 决定输出语言和风险提示方式 |
+| `{{permission_scope}}` | 可访问账户、客户、区域、工具权限 | 判断是否允许生成工具计划 |
+| `{{available_tools}}` | 工具名、参数 schema、权限要求、超时策略 | 生成只读工具调用计划 |
+| `{{phase_scope}}` | 当前阶段只支持投放诊断、归因核对、知识查询 | 判断是否范围外 |
 
 ```text
+输入变量：
+- 当前时间：{{current_time}}
+- 用户问题：{{user_query}}
+- 会话上下文：{{conversation_context}}
+- 用户画像与语言偏好：{{user_profile}}
+- 权限范围：{{permission_scope}}
+- 可用工具注册表：{{available_tools}}
+- 当前产品范围：{{phase_scope}}
+
 角色：
 你是 AdOps Copilot 投放归因排障助手的任务总控智能体，负责识别投放和归因问题的意图、实体、风险和工具调用计划。
 
@@ -1178,9 +1222,30 @@ L4 业务资产层
 }
 ```
 
-## 15.4 投放诊断智能体 Prompt 模板
+## 15.5 投放诊断智能体 Prompt 模板
+
+### 15.5.1 变量填充
+
+| 变量 | 填入内容 | 主要用途 |
+| --- | --- | --- |
+| `{{routing_result}}` | 总控智能体输出的 intent、entities、risk_level、tool_plan | 确认任务类型和实体 |
+| `{{user_query}}` | 用户原始问题 | 保留问题表达和关注点 |
+| `{{metric_results}}` | `get_campaign_metrics` 返回的指标序列和对比结果 | 判断异常指标和漏斗层级 |
+| `{{account_status}}` | 账户、预算、余额、投放状态 | 排查预算、限额、暂停等原因 |
+| `{{retrieved_knowledge}}` | 投放 SOP、指标口径、历史案例 | 约束诊断路径和原因分类 |
+| `{{evidence_objects}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
+| `{{business_rules}}` | 指标计算、异常阈值、时间窗口规则 | 防止模型自行计算或改口径 |
 
 ```text
+输入变量：
+- 总控路由结果：{{routing_result}}
+- 用户问题：{{user_query}}
+- 指标查询结果：{{metric_results}}
+- 账户状态：{{account_status}}
+- 召回知识：{{retrieved_knowledge}}
+- 证据对象：{{evidence_objects}}
+- 业务规则：{{business_rules}}
+
 角色：
 你是广告投放效果诊断智能体。你只能基于工具返回的数据、知识库引用和历史案例输出诊断。
 
@@ -1211,9 +1276,30 @@ L4 业务资产层
 }
 ```
 
-## 15.5 归因核对智能体 Prompt 模板
+## 15.6 归因核对智能体 Prompt 模板
+
+### 15.6.1 变量填充
+
+| 变量 | 填入内容 | 主要用途 |
+| --- | --- | --- |
+| `{{routing_result}}` | 总控智能体输出的 intent、entities、risk_level、tool_plan | 确认归因核对对象 |
+| `{{platform_report}}` | 平台侧指标、事件、时间窗口和时区 | 对比平台口径 |
+| `{{mmp_report}}` | MMP 侧指标、事件、时间窗口和时区 | 对比 MMP 口径 |
+| `{{postback_status}}` | postback 成功、失败、延迟、拒收摘要 | 判断回调链路是否影响差异 |
+| `{{attribution_policy_context}}` | 归因窗口、去重、re-attribution、隐私限制口径 | 约束核对清单 |
+| `{{event_mapping}}` | 平台事件与 MMP/客户事件映射关系 | 排查事件定义不一致 |
+| `{{evidence_objects}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
 
 ```text
+输入变量：
+- 总控路由结果：{{routing_result}}
+- 平台报表：{{platform_report}}
+- MMP 报表：{{mmp_report}}
+- Postback 状态：{{postback_status}}
+- 归因口径上下文：{{attribution_policy_context}}
+- 事件映射：{{event_mapping}}
+- 证据对象：{{evidence_objects}}
+
 角色：
 你是广告归因和数据差异核对智能体，负责解释平台、MMP、客户后台之间的数据差异。
 
@@ -1240,9 +1326,62 @@ L4 业务资产层
 }
 ```
 
-## 15.6 工具调用模板
+## 15.7 Judge AI 评估 Prompt 模板
 
-### 15.6.1 Campaign 指标查询
+### 15.7.1 变量填充
+
+| 变量 | 填入内容 | 主要用途 |
+| --- | --- | --- |
+| `{{scenario}}` | `performance_diagnosis` 或 `attribution_check` | 决定评分维度 |
+| `{{user_query}}` | 用户原始问题 | 判断回答是否解决问题 |
+| `{{agent_output}}` | 待评估的智能体输出 JSON | 评分对象 |
+| `{{evidence_objects}}` | 可引用证据对象 | 检查结论是否有证据 |
+| `{{golden_answer}}` | 黄金集标准答案或人工审核要点 | 离线评测时使用 |
+| `{{safety_policy}}` | 越权、无证据、高风险输出规则 | 检查安全问题 |
+
+```text
+输入变量：
+- 场景：{{scenario}}
+- 用户问题：{{user_query}}
+- 待评估输出：{{agent_output}}
+- 可用证据对象：{{evidence_objects}}
+- 黄金答案或人工审核要点：{{golden_answer}}
+- 安全策略：{{safety_policy}}
+
+角色：
+你是 AdOps Copilot 的 Judge AI，负责评估投放诊断或归因核对输出是否可上线、可交付、可复盘。
+
+评估要求：
+1. 检查输出是否回答了用户问题。
+2. 检查关键结论是否能在 evidence_objects 中找到对应证据。
+3. 检查是否存在无证据强答、越权、过度确定、把相关性写成因果性。
+4. 对投放诊断，重点检查异常指标、漏斗层级、原因排序、下一步动作是否完整。
+5. 对归因核对，重点检查时区、窗口、去重、事件定义、postback、数据延迟是否覆盖。
+6. 如果 golden_answer 存在，比较输出与黄金答案的关键差异。
+
+输出 JSON：
+{
+  "pass": false,
+  "overall_score": 0,
+  "dimension_scores": {
+    "intent_alignment": 0,
+    "evidence_alignment": 0,
+    "checklist_completeness": 0,
+    "reasoning_quality": 0,
+    "safety_compliance": 0,
+    "actionability": 0
+  },
+  "blocking_issues": [],
+  "non_blocking_issues": [],
+  "missing_evidence_ids": [],
+  "suggested_fix": "",
+  "requires_human_review": true
+}
+```
+
+## 15.8 工具调用模板
+
+### 15.8.1 Campaign 指标查询
 
 ```json
 {
@@ -1261,7 +1400,7 @@ L4 业务资产层
 }
 ```
 
-### 15.6.2 归因对账查询
+### 15.8.2 归因对账查询
 
 ```json
 {
@@ -1281,7 +1420,7 @@ L4 业务资产层
 }
 ```
 
-## 15.7 成本、性能与观测
+## 15.9 成本、性能与观测
 
 | 项目 | 当前阶段目标 |
 | --- | --- |
