@@ -197,7 +197,13 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 ## 5.1 端到端业务流程
 
-![投放归因排障端到端业务流程图](assets/adops_attribution_workflow.svg)
+业务处理流程图：
+
+![投放归因业务处理流程图](assets/adops_attribution_business_process.png)
+
+AI 工作流流程图：
+
+![投放归因排障端到端业务流程图](assets/adops_attribution_workflow.png)
 
 ```text
 问题输入
@@ -219,7 +225,7 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 ## 5.2 系统架构
 
-![投放归因排障系统架构图](assets/adops_attribution_architecture.svg)
+![投放归因排障系统架构图](assets/adops_attribution_architecture.png)
 
 ```text
 [英文业务前台]
@@ -260,7 +266,7 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 ## 5.3 智能体状态机
 
-![投放归因排障智能体状态机图](assets/adops_attribution_state_machine.svg)
+![投放归因排障智能体状态机图](assets/adops_attribution_state_machine.png)
 
 | 状态 | 说明 | 下一状态 |
 | --- | --- | --- |
