@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">投放归因排障真实案例端到端流程图</title>
+  <desc id="desc">展示用户提出 MMP installs 低于平台报表的问题后，系统从路由、工具查询、证据卡生成、诊断输出到人工确认的完整链路。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#344054"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#101828" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .title { font: 700 28px "Microsoft YaHei", Arial, sans-serif; fill: #101828; }
+      .subtitle { font: 400 14px "Microsoft YaHei", Arial, sans-serif; fill: #667085; }
+      .box { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 12; filter: url(#shadow); }
+      .user { stroke: #60a5fa; }
+      .control { stroke: #22d3ee; }
+      .agent { stroke: #86efac; }
+      .tool { stroke: #fdba74; }
+      .output { stroke: #c4b5fd; }
+      .label { font: 700 15px "Microsoft YaHei", Arial, sans-serif; fill: #101828; }
+      .small { font: 400 12px "Microsoft YaHei", Arial, sans-serif; fill: #475467; }
+      .note { font: 700 12px "Microsoft YaHei", Arial, sans-serif; fill: #667085; }
+      .arrow { stroke: #344054; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .arrow-orange { stroke: #ea580c; }
+      .arrow-green { stroke: #16a34a; }
+      .arrow-blue { stroke: #2563eb; }
+      .band { fill: #f8fafc; stroke: #eaecf0; stroke-width: 1.2; rx: 16; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="760" fill="#ffffff"/>
+  <text x="48" y="54" class="title">投放归因排障真实案例端到端流程图</text>
+  <text x="48" y="82" class="subtitle">案例：客户反馈 MMP installs 比平台报表低 28%，需要判断是口径差异、延迟、postback 问题还是数据异常。</text>
+
+  <rect x="44" y="112" width="1192" height="98" class="band"/>
+  <rect x="74" y="136" width="230" height="50" class="box user"/>
+  <text x="189" y="157" text-anchor="middle" class="label">用户提问</text>
+  <text x="189" y="176" text-anchor="middle" class="small">MMP installs lower than dashboard</text>
+
+  <rect x="356" y="136" width="230" height="50" class="box control"/>
+  <text x="471" y="157" text-anchor="middle" class="label">会话创建与权限校验</text>
+  <text x="471" y="176" text-anchor="middle" class="small">user / account / customer scope</text>
+
+  <rect x="638" y="136" width="230" height="50" class="box control"/>
+  <text x="753" y="157" text-anchor="middle" class="label">意图识别与场景路由</text>
+  <text x="753" y="176" text-anchor="middle" class="small">attribution_discrepancy_check</text>
+
+  <rect x="920" y="136" width="230" height="50" class="box agent"/>
+  <text x="1035" y="157" text-anchor="middle" class="label">归因核对智能体</text>
+  <text x="1035" y="176" text-anchor="middle" class="small">生成核查计划与证据需求</text>
+
+  <path d="M304 161 H356" class="arrow"/>
+  <path d="M586 161 H638" class="arrow"/>
+  <path d="M868 161 H920" class="arrow"/>
+
+  <rect x="44" y="248" width="1192" height="176" class="band"/>
+  <text x="74" y="280" class="note">信息源调用：由场景智能体按证据需求调用，所有结果必须转成 evidence object</text>
+
+  <rect x="84" y="318" width="190" height="58" class="box tool"/>
+  <text x="179" y="342" text-anchor="middle" class="label">RAG 检索</text>
+  <text x="179" y="362" text-anchor="middle" class="small">MMP 口径 / 时区 / 窗口</text>
+
+  <rect x="314" y="318" width="190" height="58" class="box tool"/>
+  <text x="409" y="342" text-anchor="middle" class="label">平台报表查询</text>
+  <text x="409" y="362" text-anchor="middle" class="small">campaign metrics</text>
+
+  <rect x="544" y="318" width="190" height="58" class="box tool"/>
+  <text x="639" y="342" text-anchor="middle" class="label">MMP 报表查询</text>
+  <text x="639" y="362" text-anchor="middle" class="small">event / attribution window</text>
+
+  <rect x="774" y="318" width="190" height="58" class="box tool"/>
+  <text x="869" y="342" text-anchor="middle" class="label">Postback 摘要</text>
+  <text x="869" y="362" text-anchor="middle" class="small">delay / reject / retry</text>
+
+  <rect x="1004" y="318" width="190" height="58" class="box tool"/>
+  <text x="1099" y="342" text-anchor="middle" class="label">历史案例检索</text>
+  <text x="1099" y="362" text-anchor="middle" class="small">similar cases</text>
+
+  <path d="M1035 186 V232 H179 V318" class="arrow arrow-orange"/>
+  <path d="M1035 232 H409 V318" class="arrow arrow-orange"/>
+  <path d="M1035 232 H639 V318" class="arrow arrow-orange"/>
+  <path d="M1035 232 H869 V318" class="arrow arrow-orange"/>
+  <path d="M1035 232 H1099 V318" class="arrow arrow-orange"/>
+
+  <rect x="44" y="462" width="1192" height="104" class="band"/>
+  <rect x="92" y="486" width="210" height="58" class="box output"/>
+  <text x="197" y="510" text-anchor="middle" class="label">差异证据卡</text>
+  <text x="197" y="530" text-anchor="middle" class="small">platform vs MMP value</text>
+
+  <rect x="330" y="486" width="210" height="58" class="box output"/>
+  <text x="435" y="510" text-anchor="middle" class="label">口径证据卡</text>
+  <text x="435" y="530" text-anchor="middle" class="small">timezone / window / mapping</text>
+
+  <rect x="568" y="486" width="210" height="58" class="box output"/>
+  <text x="673" y="510" text-anchor="middle" class="label">链路证据卡</text>
+  <text x="673" y="530" text-anchor="middle" class="small">postback delay / status</text>
+
+  <rect x="806" y="486" width="210" height="58" class="box output"/>
+  <text x="911" y="510" text-anchor="middle" class="label">待补充信息卡</text>
+  <text x="911" y="530" text-anchor="middle" class="small">missing data / blocked reason</text>
+
+  <path d="M179 376 V442 H197 V486" class="arrow arrow-orange"/>
+  <path d="M409 376 V442 H435 V486" class="arrow arrow-orange"/>
+  <path d="M639 376 V442 H673 V486" class="arrow arrow-orange"/>
+  <path d="M869 376 V442 H673 V486" class="arrow arrow-orange"/>
+  <path d="M1099 376 V442 H911 V486" class="arrow arrow-orange"/>
+
+  <rect x="44" y="604" width="1192" height="98" class="band"/>
+  <rect x="174" y="628" width="230" height="50" class="box agent"/>
+  <text x="289" y="649" text-anchor="middle" class="label">诊断结论生成</text>
+  <text x="289" y="668" text-anchor="middle" class="small">原因排序 / 已排除项 / 下一步</text>
+
+  <rect x="524" y="628" width="230" height="50" class="box control"/>
+  <text x="639" y="649" text-anchor="middle" class="label">安全交付</text>
+  <text x="639" y="668" text-anchor="middle" class="small">证据绑定 / 风险提示 / 摘要</text>
+
+  <rect x="874" y="628" width="230" height="50" class="box user"/>
+  <text x="989" y="649" text-anchor="middle" class="label">人工确认</text>
+  <text x="989" y="668" text-anchor="middle" class="small">采纳 / 追问 / 升级 / Badcase</text>
+
+  <path d="M673 544 V586 H289 V628" class="arrow arrow-green"/>
+  <path d="M404 653 H524" class="arrow"/>
+  <path d="M754 653 H874" class="arrow"/>
+</svg>

@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">AdOps Copilot 投放归因排障研发协作职责图</title>
+  <desc id="desc">展示产品、后端平台、算法模型、数据、业务运营、安全合规在投放归因排障助手落地中的职责分工。</desc>
+  <defs>
+    <style>
+      .title { font: 700 28px "Microsoft YaHei", Arial, sans-serif; fill: #101828; }
+      .subtitle { font: 400 14px "Microsoft YaHei", Arial, sans-serif; fill: #667085; }
+      .head { fill: #eef4ff; stroke: #c7d7fe; stroke-width: 1.2; rx: 10; }
+      .rowhead { fill: #f8fafc; stroke: #d0d5dd; stroke-width: 1; rx: 10; }
+      .cell { fill: #ffffff; stroke: #eaecf0; stroke-width: 1; rx: 10; }
+      .owner { fill: #ecfdf3; stroke: #86efac; stroke-width: 1.2; rx: 10; }
+      .support { fill: #fff7ed; stroke: #fdba74; stroke-width: 1.2; rx: 10; }
+      .review { fill: #f5f3ff; stroke: #c4b5fd; stroke-width: 1.2; rx: 10; }
+      .label { font: 700 14px "Microsoft YaHei", Arial, sans-serif; fill: #101828; }
+      .small { font: 400 12px "Microsoft YaHei", Arial, sans-serif; fill: #475467; }
+      .legend { font: 700 12px "Microsoft YaHei", Arial, sans-serif; fill: #344054; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" fill="#ffffff"/>
+  <text x="48" y="54" class="title">研发、算法与业务协作职责图</text>
+  <text x="48" y="82" class="subtitle">目标：把 Prompt、工具、RAG、评测、权限和灰度拆成可交付对象，明确产品经理在 AI 落地中的责任边界。</text>
+
+  <rect x="54" y="116" width="180" height="46" class="head"/>
+  <text x="144" y="144" text-anchor="middle" class="label">工作项</text>
+
+  <rect x="250" y="116" width="150" height="46" class="head"/>
+  <text x="325" y="144" text-anchor="middle" class="label">产品经理</text>
+
+  <rect x="416" y="116" width="150" height="46" class="head"/>
+  <text x="491" y="144" text-anchor="middle" class="label">后端/平台</text>
+
+  <rect x="582" y="116" width="150" height="46" class="head"/>
+  <text x="657" y="144" text-anchor="middle" class="label">算法/模型</text>
+
+  <rect x="748" y="116" width="150" height="46" class="head"/>
+  <text x="823" y="144" text-anchor="middle" class="label">数据/BI</text>
+
+  <rect x="914" y="116" width="150" height="46" class="head"/>
+  <text x="989" y="144" text-anchor="middle" class="label">AdOps/AM</text>
+
+  <rect x="1080" y="116" width="150" height="46" class="head"/>
+  <text x="1155" y="144" text-anchor="middle" class="label">安全/合规</text>
+
+  <g>
+    <rect x="54" y="184" width="180" height="58" class="rowhead"/>
+    <text x="144" y="208" text-anchor="middle" class="label">场景与范围</text>
+    <text x="144" y="228" text-anchor="middle" class="small">MVP / 边界 / 验收</text>
+    <rect x="250" y="184" width="150" height="58" class="owner"/><text x="325" y="208" text-anchor="middle" class="label">负责</text><text x="325" y="228" text-anchor="middle" class="small">范围和指标</text>
+    <rect x="416" y="184" width="150" height="58" class="support"/><text x="491" y="208" text-anchor="middle" class="label">参与</text><text x="491" y="228" text-anchor="middle" class="small">技术边界</text>
+    <rect x="582" y="184" width="150" height="58" class="support"/><text x="657" y="208" text-anchor="middle" class="label">参与</text><text x="657" y="228" text-anchor="middle" class="small">模型可行性</text>
+    <rect x="748" y="184" width="150" height="58" class="support"/><text x="823" y="208" text-anchor="middle" class="label">参与</text><text x="823" y="228" text-anchor="middle" class="small">数据可得性</text>
+    <rect x="914" y="184" width="150" height="58" class="owner"/><text x="989" y="208" text-anchor="middle" class="label">负责</text><text x="989" y="228" text-anchor="middle" class="small">真实问题</text>
+    <rect x="1080" y="184" width="150" height="58" class="review"/><text x="1155" y="208" text-anchor="middle" class="label">评审</text><text x="1155" y="228" text-anchor="middle" class="small">敏感边界</text>
+  </g>
+
+  <g>
+    <rect x="54" y="262" width="180" height="58" class="rowhead"/>
+    <text x="144" y="286" text-anchor="middle" class="label">Prompt 与 Schema</text>
+    <text x="144" y="306" text-anchor="middle" class="small">变量 / 禁止项 / 输出</text>
+    <rect x="250" y="262" width="150" height="58" class="owner"/><text x="325" y="286" text-anchor="middle" class="label">负责</text><text x="325" y="306" text-anchor="middle" class="small">业务约束</text>
+    <rect x="416" y="262" width="150" height="58" class="support"/><text x="491" y="286" text-anchor="middle" class="label">参与</text><text x="491" y="306" text-anchor="middle" class="small">版本管理</text>
+    <rect x="582" y="262" width="150" height="58" class="owner"/><text x="657" y="286" text-anchor="middle" class="label">负责</text><text x="657" y="306" text-anchor="middle" class="small">结构稳定</text>
+    <rect x="748" y="262" width="150" height="58" class="support"/><text x="823" y="286" text-anchor="middle" class="label">参与</text><text x="823" y="306" text-anchor="middle" class="small">字段口径</text>
+    <rect x="914" y="262" width="150" height="58" class="review"/><text x="989" y="286" text-anchor="middle" class="label">评审</text><text x="989" y="306" text-anchor="middle" class="small">业务可读</text>
+    <rect x="1080" y="262" width="150" height="58" class="review"/><text x="1155" y="286" text-anchor="middle" class="label">评审</text><text x="1155" y="306" text-anchor="middle" class="small">敏感输出</text>
+  </g>
+
+  <g>
+    <rect x="54" y="340" width="180" height="58" class="rowhead"/>
+    <text x="144" y="364" text-anchor="middle" class="label">RAG 知识治理</text>
+    <text x="144" y="384" text-anchor="middle" class="small">切分 / 权限 / 引用</text>
+    <rect x="250" y="340" width="150" height="58" class="owner"/><text x="325" y="364" text-anchor="middle" class="label">负责</text><text x="325" y="384" text-anchor="middle" class="small">分层和审核</text>
+    <rect x="416" y="340" width="150" height="58" class="owner"/><text x="491" y="364" text-anchor="middle" class="label">负责</text><text x="491" y="384" text-anchor="middle" class="small">索引和权限</text>
+    <rect x="582" y="340" width="150" height="58" class="owner"/><text x="657" y="364" text-anchor="middle" class="label">负责</text><text x="657" y="384" text-anchor="middle" class="small">召回评测</text>
+    <rect x="748" y="340" width="150" height="58" class="support"/><text x="823" y="364" text-anchor="middle" class="label">参与</text><text x="823" y="384" text-anchor="middle" class="small">实体映射</text>
+    <rect x="914" y="340" width="150" height="58" class="owner"/><text x="989" y="364" text-anchor="middle" class="label">负责</text><text x="989" y="384" text-anchor="middle" class="small">SOP 审核</text>
+    <rect x="1080" y="340" width="150" height="58" class="review"/><text x="1155" y="364" text-anchor="middle" class="label">评审</text><text x="1155" y="384" text-anchor="middle" class="small">隐私合规</text>
+  </g>
+
+  <g>
+    <rect x="54" y="418" width="180" height="58" class="rowhead"/>
+    <text x="144" y="442" text-anchor="middle" class="label">工具与证据对象</text>
+    <text x="144" y="462" text-anchor="middle" class="small">只读 API / Evidence</text>
+    <rect x="250" y="418" width="150" height="58" class="owner"/><text x="325" y="442" text-anchor="middle" class="label">负责</text><text x="325" y="462" text-anchor="middle" class="small">字段和规则</text>
+    <rect x="416" y="418" width="150" height="58" class="owner"/><text x="491" y="442" text-anchor="middle" class="label">负责</text><text x="491" y="462" text-anchor="middle" class="small">Tool Gateway</text>
+    <rect x="582" y="418" width="150" height="58" class="support"/><text x="657" y="442" text-anchor="middle" class="label">参与</text><text x="657" y="462" text-anchor="middle" class="small">工具选择</text>
+    <rect x="748" y="418" width="150" height="58" class="owner"/><text x="823" y="442" text-anchor="middle" class="label">负责</text><text x="823" y="462" text-anchor="middle" class="small">SQL 口径</text>
+    <rect x="914" y="418" width="150" height="58" class="review"/><text x="989" y="442" text-anchor="middle" class="label">评审</text><text x="989" y="462" text-anchor="middle" class="small">证据有效</text>
+    <rect x="1080" y="418" width="150" height="58" class="review"/><text x="1155" y="442" text-anchor="middle" class="label">评审</text><text x="1155" y="462" text-anchor="middle" class="small">RBAC/ABAC</text>
+  </g>
+
+  <g>
+    <rect x="54" y="496" width="180" height="58" class="rowhead"/>
+    <text x="144" y="520" text-anchor="middle" class="label">评测与灰度</text>
+    <text x="144" y="540" text-anchor="middle" class="small">黄金集 / 门禁 / 回滚</text>
+    <rect x="250" y="496" width="150" height="58" class="owner"/><text x="325" y="520" text-anchor="middle" class="label">负责</text><text x="325" y="540" text-anchor="middle" class="small">评测标准</text>
+    <rect x="416" y="496" width="150" height="58" class="owner"/><text x="491" y="520" text-anchor="middle" class="label">负责</text><text x="491" y="540" text-anchor="middle" class="small">灰度回滚</text>
+    <rect x="582" y="496" width="150" height="58" class="owner"/><text x="657" y="520" text-anchor="middle" class="label">负责</text><text x="657" y="540" text-anchor="middle" class="small">模型评测</text>
+    <rect x="748" y="496" width="150" height="58" class="owner"/><text x="823" y="520" text-anchor="middle" class="label">负责</text><text x="823" y="540" text-anchor="middle" class="small">指标看板</text>
+    <rect x="914" y="496" width="150" height="58" class="owner"/><text x="989" y="520" text-anchor="middle" class="label">负责</text><text x="989" y="540" text-anchor="middle" class="small">人工抽检</text>
+    <rect x="1080" y="496" width="150" height="58" class="owner"/><text x="1155" y="520" text-anchor="middle" class="label">负责</text><text x="1155" y="540" text-anchor="middle" class="small">风险门禁</text>
+  </g>
+
+  <rect x="250" y="602" width="110" height="30" class="owner"/>
+  <text x="305" y="622" text-anchor="middle" class="legend">负责</text>
+  <rect x="390" y="602" width="110" height="30" class="support"/>
+  <text x="445" y="622" text-anchor="middle" class="legend">参与</text>
+  <rect x="530" y="602" width="110" height="30" class="review"/>
+  <text x="585" y="622" text-anchor="middle" class="legend">评审</text>
+  <text x="680" y="622" class="small">产品经理的核心产出：业务口径、Prompt 变量、工具/证据 schema、评测门禁、灰度与复盘机制。</text>
+</svg>

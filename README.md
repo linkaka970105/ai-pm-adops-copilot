@@ -23,6 +23,7 @@
 | `03_prd/AdOps_Copilot_投放归因排障助手_PRD_v1.md` | 第一阶段 MVP，聚焦投放效果异常诊断与归因数据不一致核对 |
 | `03_prd/AdOps_Copilot_SDK素材审核客户回复_PRD_v1.md` | 第二阶段扩展能力，覆盖 SDK/API 排障、素材审核、客户英文回复 |
 | `03_prd/AdOps_Copilot_PRD_v6.md` | 拆分前的完整 PRD 版本 |
+| `05_interview_review/AdOps_Copilot_投放归因排障助手_项目复盘与面试追问_v1.md` | 面试内化文档，沉淀项目复盘、corner case 和高频追问答法 |
 
 ## 维护约定
 
