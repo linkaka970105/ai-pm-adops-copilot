@@ -37,7 +37,7 @@
 
   <rect width="1280" height="860" fill="#ffffff"/>
   <text x="48" y="54" class="title">AdOps Copilot 投放归因排障端到端泳道图</text>
-  <text x="48" y="82" class="subtitle">展示从用户发起问题、总控编排、知识检索、只读工具调用、诊断生成到 Badcase 回流的跨角色协作流程。</text>
+  <text x="48" y="82" class="subtitle">展示从用户发起问题、总控路由编排、场景智能体排查、只读工具调用、诊断交付到 Badcase 回流的跨角色协作流程。</text>
 
   <rect x="40" y="112" width="1200" height="116" class="lane lane-user"/>
   <rect x="40" y="244" width="1200" height="116" class="lane lane-copilot"/>
@@ -72,8 +72,8 @@
   <text x="665" y="320" text-anchor="middle" class="small">实体 / 风险 / 范围</text>
 
   <rect x="775" y="276" width="150" height="58" class="box cyan"/>
-  <text x="850" y="300" text-anchor="middle" class="label">任务拆解</text>
-  <text x="850" y="320" text-anchor="middle" class="small">检索与工具计划</text>
+  <text x="850" y="300" text-anchor="middle" class="label">场景路由</text>
+  <text x="850" y="320" text-anchor="middle" class="small">选择智能体与约束</text>
 
   <rect x="1000" y="276" width="150" height="58" class="box cyan"/>
   <text x="1075" y="300" text-anchor="middle" class="label">安全交付</text>
@@ -83,13 +83,9 @@
   <text x="480" y="432" text-anchor="middle" class="label">知识检索</text>
   <text x="480" y="452" text-anchor="middle" class="small">SOP / 口径 / 案例</text>
 
-  <rect x="685" y="408" width="170" height="58" class="box green"/>
-  <text x="770" y="432" text-anchor="middle" class="label">场景智能体</text>
-  <text x="770" y="452" text-anchor="middle" class="small">投放诊断 / 归因核对</text>
-
-  <rect x="1000" y="408" width="150" height="58" class="box green"/>
-  <text x="1075" y="432" text-anchor="middle" class="label">Judge AI</text>
-  <text x="1075" y="452" text-anchor="middle" class="small">证据与安全评估</text>
+  <rect x="660" y="408" width="220" height="58" class="box green"/>
+  <text x="770" y="432" text-anchor="middle" class="label">场景智能体排查</text>
+  <text x="770" y="452" text-anchor="middle" class="small">拆步骤 / 调工具 / 组织证据</text>
 
   <rect x="300" y="540" width="170" height="58" class="box orange"/>
   <text x="385" y="564" text-anchor="middle" class="label">报表与账户工具</text>
@@ -115,25 +111,30 @@
   <text x="1075" y="712" text-anchor="middle" class="label">Badcase 记录</text>
   <text x="1075" y="732" text-anchor="middle" class="small">问题分类与分派</text>
 
+  <rect x="980" y="790" width="170" height="46" class="box purple"/>
+  <text x="1065" y="809" text-anchor="middle" class="label">Judge AI 评测</text>
+  <text x="1065" y="826" text-anchor="middle" class="small">离线 / 灰度 / 回归</text>
+
   <path d="M295 202 V276" class="arrow"/>
   <path d="M370 305 H405" class="arrow"/>
   <path d="M555 305 H590" class="arrow"/>
   <path d="M740 305 H775" class="arrow"/>
 
-  <path d="M850 334 V370 H480 V408" class="arrow arrow-green"/>
-  <path d="M850 334 V500 H385 V540" class="arrow arrow-orange"/>
-  <path d="M850 334 V500 H645 V540" class="arrow arrow-orange"/>
+  <path d="M850 334 V386 H770 V408" class="arrow arrow-green"/>
+  <path d="M770 466 V500 H385 V540" class="arrow arrow-orange"/>
+  <path d="M770 466 V500 H645 V540" class="arrow arrow-orange"/>
+  <path d="M770 408 V386 H480 V408" class="arrow arrow-green"/>
 
-  <path d="M555 437 H685" class="arrow arrow-green"/>
+  <path d="M555 437 H660" class="arrow arrow-green"/>
   <path d="M470 569 H560" class="arrow arrow-orange"/>
   <path d="M730 569 H820" class="arrow arrow-orange"/>
   <path d="M895 540 V500 H770 V466" class="arrow arrow-orange"/>
 
-  <path d="M855 437 H1000" class="arrow arrow-green"/>
-  <path d="M1075 408 V334" class="arrow arrow-green"/>
+  <path d="M880 437 H1075 V334" class="arrow arrow-green"/>
   <path d="M1075 276 V202" class="arrow arrow-blue"/>
 
   <path d="M1150 173 H1195 V717 H1150" class="arrow arrow-dashed arrow-orange"/>
+  <path d="M1075 746 V790" class="arrow arrow-dashed arrow-orange"/>
   <path d="M1000 717 H920" class="arrow arrow-dashed arrow-orange"/>
   <path d="M760 717 H700" class="arrow arrow-dashed arrow-orange"/>
   <text x="932" y="668" class="note">反馈、Badcase、知识与评测闭环</text>

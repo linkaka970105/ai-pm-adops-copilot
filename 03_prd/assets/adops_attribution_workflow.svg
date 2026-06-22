@@ -54,14 +54,14 @@
   <rect x="40" y="276" width="1200" height="160" class="lane"/>
   <text x="64" y="306" class="lane-title">检索、工具与证据</text>
   <rect x="70" y="332" width="190" height="64" class="box box-green"/>
-  <text x="165" y="354" text-anchor="middle" class="label">任务拆解</text>
-  <text x="165" y="374" text-anchor="middle" class="small">投放诊断 / 归因核对</text>
+  <text x="165" y="354" text-anchor="middle" class="label">场景路由</text>
+  <text x="165" y="374" text-anchor="middle" class="small">选择智能体与约束</text>
   <rect x="318" y="332" width="190" height="64" class="box box-green"/>
   <text x="413" y="354" text-anchor="middle" class="label">知识检索</text>
   <text x="413" y="374" text-anchor="middle" class="small">SOP / 指标 / 归因口径</text>
   <rect x="566" y="332" width="190" height="64" class="box box-green"/>
-  <text x="661" y="354" text-anchor="middle" class="label">工具调用计划</text>
-  <text x="661" y="374" text-anchor="middle" class="small">只读参数模板</text>
+  <text x="661" y="354" text-anchor="middle" class="label">工具需求生成</text>
+  <text x="661" y="374" text-anchor="middle" class="small">场景智能体细化</text>
   <rect x="814" y="332" width="190" height="64" class="box box-green"/>
   <text x="909" y="354" text-anchor="middle" class="label">工具网关执行</text>
   <text x="909" y="374" text-anchor="middle" class="small">报表 / 账户 / MMP</text>
