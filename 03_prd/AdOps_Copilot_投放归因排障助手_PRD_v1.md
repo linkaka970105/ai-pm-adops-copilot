@@ -199,6 +199,10 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 ![投放归因排障端到端业务流程图](assets/adops_attribution_workflow.svg)
 
+泳道图用于补充说明端到端流程中不同角色、智能体、数据工具和知识运营后台之间的职责分工。
+
+![投放归因排障端到端泳道图](assets/adops_attribution_swimlane.svg)
+
 ```text
 问题输入
   -> 会话创建

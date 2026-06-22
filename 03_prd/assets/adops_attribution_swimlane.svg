@@ -1,0 +1,143 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-labelledby="title desc">
+  <title id="title">AdOps Copilot 投放归因排障端到端泳道图</title>
+  <desc id="desc">按用户、Copilot 总控、RAG 和场景智能体、数据工具系统、知识运营后台五个泳道展示投放归因排障的职责分工和流转关系。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#344054"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#101828" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .title { font: 700 28px "Microsoft YaHei", Arial, sans-serif; fill: #101828; }
+      .subtitle { font: 400 14px "Microsoft YaHei", Arial, sans-serif; fill: #667085; }
+      .lane { stroke: #eaecf0; stroke-width: 1.2; rx: 18; }
+      .lane-user { fill: #eff8ff; }
+      .lane-copilot { fill: #f0f9ff; }
+      .lane-agent { fill: #ecfdf3; }
+      .lane-tool { fill: #fff7ed; }
+      .lane-ops { fill: #f5f3ff; }
+      .lane-label { font: 700 15px "Microsoft YaHei", Arial, sans-serif; fill: #344054; }
+      .box { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 12; filter: url(#shadow); }
+      .blue { stroke: #60a5fa; }
+      .cyan { stroke: #22d3ee; }
+      .green { stroke: #86efac; }
+      .orange { stroke: #fdba74; }
+      .purple { stroke: #c4b5fd; }
+      .label { font: 700 15px "Microsoft YaHei", Arial, sans-serif; fill: #101828; }
+      .small { font: 400 12px "Microsoft YaHei", Arial, sans-serif; fill: #475467; }
+      .arrow { stroke: #344054; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .arrow-blue { stroke: #2563eb; }
+      .arrow-green { stroke: #16a34a; }
+      .arrow-orange { stroke: #ea580c; }
+      .arrow-dashed { stroke-dasharray: 7 7; }
+      .note { font: 700 13px "Microsoft YaHei", Arial, sans-serif; fill: #ea580c; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="860" fill="#ffffff"/>
+  <text x="48" y="54" class="title">AdOps Copilot 投放归因排障端到端泳道图</text>
+  <text x="48" y="82" class="subtitle">展示从用户发起问题、总控编排、知识检索、只读工具调用、诊断生成到 Badcase 回流的跨角色协作流程。</text>
+
+  <rect x="40" y="112" width="1200" height="116" class="lane lane-user"/>
+  <rect x="40" y="244" width="1200" height="116" class="lane lane-copilot"/>
+  <rect x="40" y="376" width="1200" height="116" class="lane lane-agent"/>
+  <rect x="40" y="508" width="1200" height="116" class="lane lane-tool"/>
+  <rect x="40" y="640" width="1200" height="136" class="lane lane-ops"/>
+
+  <text x="70" y="152" class="lane-label">用户 / AM / AdOps</text>
+  <text x="70" y="284" class="lane-label">Copilot 总控</text>
+  <text x="70" y="416" class="lane-label">RAG 与场景智能体</text>
+  <text x="70" y="548" class="lane-label">数据与工具系统</text>
+  <text x="70" y="680" class="lane-label">知识运营后台</text>
+
+  <rect x="220" y="144" width="150" height="58" class="box blue"/>
+  <text x="295" y="168" text-anchor="middle" class="label">提出问题</text>
+  <text x="295" y="188" text-anchor="middle" class="small">投放异常 / 归因差异</text>
+
+  <rect x="1000" y="144" width="150" height="58" class="box blue"/>
+  <text x="1075" y="168" text-anchor="middle" class="label">查看诊断</text>
+  <text x="1075" y="188" text-anchor="middle" class="small">采纳 / 追问 / 转人工</text>
+
+  <rect x="220" y="276" width="150" height="58" class="box cyan"/>
+  <text x="295" y="300" text-anchor="middle" class="label">创建会话</text>
+  <text x="295" y="320" text-anchor="middle" class="small">绑定入口与上下文</text>
+
+  <rect x="405" y="276" width="150" height="58" class="box cyan"/>
+  <text x="480" y="300" text-anchor="middle" class="label">权限校验</text>
+  <text x="480" y="320" text-anchor="middle" class="small">角色 / 账户 / 区域</text>
+
+  <rect x="590" y="276" width="150" height="58" class="box cyan"/>
+  <text x="665" y="300" text-anchor="middle" class="label">意图识别</text>
+  <text x="665" y="320" text-anchor="middle" class="small">实体 / 风险 / 范围</text>
+
+  <rect x="775" y="276" width="150" height="58" class="box cyan"/>
+  <text x="850" y="300" text-anchor="middle" class="label">任务拆解</text>
+  <text x="850" y="320" text-anchor="middle" class="small">检索与工具计划</text>
+
+  <rect x="1000" y="276" width="150" height="58" class="box cyan"/>
+  <text x="1075" y="300" text-anchor="middle" class="label">安全交付</text>
+  <text x="1075" y="320" text-anchor="middle" class="small">证据 / 风险 / 摘要</text>
+
+  <rect x="405" y="408" width="150" height="58" class="box green"/>
+  <text x="480" y="432" text-anchor="middle" class="label">知识检索</text>
+  <text x="480" y="452" text-anchor="middle" class="small">SOP / 口径 / 案例</text>
+
+  <rect x="685" y="408" width="170" height="58" class="box green"/>
+  <text x="770" y="432" text-anchor="middle" class="label">场景智能体</text>
+  <text x="770" y="452" text-anchor="middle" class="small">投放诊断 / 归因核对</text>
+
+  <rect x="1000" y="408" width="150" height="58" class="box green"/>
+  <text x="1075" y="432" text-anchor="middle" class="label">Judge AI</text>
+  <text x="1075" y="452" text-anchor="middle" class="small">证据与安全评估</text>
+
+  <rect x="300" y="540" width="170" height="58" class="box orange"/>
+  <text x="385" y="564" text-anchor="middle" class="label">报表与账户工具</text>
+  <text x="385" y="584" text-anchor="middle" class="small">Metrics / Status</text>
+
+  <rect x="560" y="540" width="170" height="58" class="box orange"/>
+  <text x="645" y="564" text-anchor="middle" class="label">归因与回传工具</text>
+  <text x="645" y="584" text-anchor="middle" class="small">MMP / Postback</text>
+
+  <rect x="820" y="540" width="150" height="58" class="box orange"/>
+  <text x="895" y="564" text-anchor="middle" class="label">证据对象</text>
+  <text x="895" y="584" text-anchor="middle" class="small">Evidence Object</text>
+
+  <rect x="540" y="688" width="160" height="58" class="box purple"/>
+  <text x="620" y="712" text-anchor="middle" class="label">Prompt 与工具更新</text>
+  <text x="620" y="732" text-anchor="middle" class="small">版本 / 回归 / 灰度</text>
+
+  <rect x="760" y="688" width="160" height="58" class="box purple"/>
+  <text x="840" y="712" text-anchor="middle" class="label">知识与评测回流</text>
+  <text x="840" y="732" text-anchor="middle" class="small">SOP / Golden Set</text>
+
+  <rect x="1000" y="688" width="150" height="58" class="box purple"/>
+  <text x="1075" y="712" text-anchor="middle" class="label">Badcase 记录</text>
+  <text x="1075" y="732" text-anchor="middle" class="small">问题分类与分派</text>
+
+  <path d="M295 202 V276" class="arrow"/>
+  <path d="M370 305 H405" class="arrow"/>
+  <path d="M555 305 H590" class="arrow"/>
+  <path d="M740 305 H775" class="arrow"/>
+
+  <path d="M850 334 V370 H480 V408" class="arrow arrow-green"/>
+  <path d="M850 334 V500 H385 V540" class="arrow arrow-orange"/>
+  <path d="M850 334 V500 H645 V540" class="arrow arrow-orange"/>
+
+  <path d="M555 437 H685" class="arrow arrow-green"/>
+  <path d="M470 569 H560" class="arrow arrow-orange"/>
+  <path d="M730 569 H820" class="arrow arrow-orange"/>
+  <path d="M895 540 V500 H770 V466" class="arrow arrow-orange"/>
+
+  <path d="M855 437 H1000" class="arrow arrow-green"/>
+  <path d="M1075 408 V334" class="arrow arrow-green"/>
+  <path d="M1075 276 V202" class="arrow arrow-blue"/>
+
+  <path d="M1150 173 H1195 V717 H1150" class="arrow arrow-dashed arrow-orange"/>
+  <path d="M1000 717 H920" class="arrow arrow-dashed arrow-orange"/>
+  <path d="M760 717 H700" class="arrow arrow-dashed arrow-orange"/>
+  <text x="932" y="668" class="note">反馈、Badcase、知识与评测闭环</text>
+
+  <path d="M665 334 V350 H180 V173 H220" class="arrow arrow-dashed arrow-blue"/>
+  <text x="386" y="350" class="small">信息缺失时追问用户</text>
+</svg>
