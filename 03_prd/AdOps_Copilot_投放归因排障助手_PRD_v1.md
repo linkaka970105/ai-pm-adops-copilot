@@ -247,6 +247,197 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 | 5. 证据卡生成 | 生成差异证据卡、口径证据卡、postback 证据卡、待补充信息卡 | 证据 ID、来源、时间、Owner、置信度 | 没有证据的假设不得进入主结论，只能进入“待确认” |
 | 6. 诊断输出 | 输出可能原因排序、已排除项、下一步动作和可转人工摘要 | 内部诊断报告 | 不生成可直接发送客户的最终回复，客户沟通需人工确认 |
 | 7. 人工确认 | 用户标记采纳、无效、继续追问或升级工单 | feedback、Badcase 类型、工单链接 | 反馈进入评测集和知识库治理，不直接训练模型 |
+### 5.2.1 案例输入与上下文假设
+
+以下数据是产品样例，用于说明字段、链路和判断方式，不代表真实业务结果。
+
+```json
+{
+  "user_query": "Client says MMP installs are 28% lower than our dashboard for campaign A yesterday. Can you check why?",
+  "entry": "campaign_sidebar",
+  "user": {
+    "user_id": "u_am_001",
+    "role": "am",
+    "language": "en",
+    "allowed_accounts": ["acct_1001"],
+    "allowed_advertisers": ["adv_2048"],
+    "allowed_tools": ["get_campaign_metrics", "get_attribution_report", "get_postback_status", "retrieve_attribution_docs", "search_similar_cases"]
+  },
+  "page_context": {
+    "account_id": "acct_1001",
+    "advertiser_id": "adv_2048",
+    "campaign_id": "cmp_A",
+    "app_id": "app_7788",
+    "geo": "US",
+    "timezone": "UTC",
+    "date_range": "2025-01-20/2025-01-20"
+  }
+}
+```
+
+### 5.2.2 逐环节处理明细
+
+| 环节 | 输入 | 系统处理 | 处理后具体结果 | 失败/缺失处理 |
+| --- | --- | --- | --- | --- |
+| 1. 会话创建 | 用户 query、入口、页面上下文 | 生成 `trace_id`，绑定用户、入口、campaign、时间窗和语言；记录原始 query | `trace_id=tr_20250121_0001`，`session_type=attribution_check`，语言识别为英文 | 页面缺少 campaign 时进入追问：要求用户补充 campaign/app/event/time range |
+| 2. 权限校验 | 用户角色、账户、客户、工具权限 | RBAC 校验用户角色，ABAC 校验 account、advertiser、geo、tool scope | `permission_status=allowed`，可查 `acct_1001/adv_2048/cmp_A`，不可导出客户原始日志 | 任一 scope 不通过时，终止工具调用，只提示权限不足 |
+| 3. 意图与实体识别 | 原始 query、页面上下文 | 抽取 MMP、metric、event、时间窗、差异方向；判断是否属于归因核对 | `intent=attribution_discrepancy_check`，`metric=installs`，`reported_gap=28%`，`date_range=yesterday` | 缺少 event 时默认使用 `install`，但诊断卡标记为默认假设 |
+| 4. 场景路由 | intent、risk、权限、实体 | 总控选择归因核对智能体，下发工具白名单和禁止项 | `agent=attribution_check_agent`，风险等级 `medium`，禁止生成客户可直接发送回复 | 如果 query 同时包含素材/SDK/API 深排，则拆分并提示当前只处理归因核对 |
+| 5. 任务拆解 | 场景上下文、核查清单 | 场景智能体把问题拆成 7 个检查项：时区、窗口、事件映射、去重、postback、刷新延迟、渠道映射 | 生成 `evidence_requirements` 和工具计划；要求至少 1 条当前数据证据 + 1 条口径证据 | 如果工具不可用，转入缓存/ETL/人工上传路径 |
+| 6. RAG 检索 | MMP、event、geo、window、query 改写结果 | 权限预过滤后做 BM25 + 向量混合召回，再 rerank 选择口径文档 | 返回 3 条引用：MMP install 口径、平台 attribution window、timezone SOP | 低于阈值时不引用，输出“知识库暂无可靠口径” |
+| 7. 报表工具查询 | campaign、event、date_range、timezone | 调用平台报表和 MMP 报表，规则层计算差异比例 | 平台 installs=1250，MMP installs=900，差异率=28.0% | API 超时则读取有效缓存并标注 `data_freshness` |
+| 8. Postback 摘要查询 | app_id、event、date_range | 查询 postback 聚合状态，不展示原始 token 或用户级日志 | `success_rate=92.4%`，`delayed_rate=6.8%`，无大面积 reject | 无权限查明细时只返回聚合摘要 |
+| 9. 证据对象生成 | RAG 引用、工具结果、规则计算结果 | 将不同来源转成统一 evidence object，并绑定 claim | 生成 4 张证据卡：差异证据、口径证据、postback 证据、待确认项 | 无 evidence 不允许进入主结论 |
+| 10. 诊断生成 | evidence object、业务规则、Prompt 模板 | 场景智能体生成原因排序、已排除项、下一步动作和置信度 | 主判断：差异真实存在；优先检查 attribution window/timezone/event mapping，postback 延迟为次要可能 | 有冲突证据时输出“需要人工确认”，不做强结论 |
+| 11. 安全交付 | 诊断草稿、证据映射、权限范围 | 总控检查无证据强答、越权、客户可见话术和敏感信息 | 输出内部诊断卡；客户沟通需 AM 人工改写确认 | 发现敏感字段时删除并记录安全拦截 |
+| 12. 人工反馈 | 采纳/无效/继续追问/升级 | 写入反馈事件，必要时生成 Badcase 或升级工单摘要 | `feedback=accepted_with_followup`，生成内部摘要和工单上下文 | 无反馈会话不计入“有效 AI 辅助排障会话数” |
+
+### 5.2.3 核心中间结果样例
+
+路由结果：
+
+```json
+{
+  "trace_id": "tr_20250121_0001",
+  "intent": "attribution_discrepancy_check",
+  "language": "en",
+  "entities": {
+    "account_id": "acct_1001",
+    "advertiser_id": "adv_2048",
+    "campaign_id": "cmp_A",
+    "app_id": "app_7788",
+    "event_name": "install",
+    "mmp": "appsFlyer",
+    "date_range": "2025-01-20/2025-01-20",
+    "geo": "US",
+    "timezone": "UTC"
+  },
+  "risk_level": "medium",
+  "selected_agent": "attribution_check_agent",
+  "allowed_tools": ["retrieve_attribution_docs", "get_campaign_metrics", "get_attribution_report", "get_postback_status", "search_similar_cases"],
+  "blocked_actions": ["modify_campaign", "send_customer_reply", "export_raw_logs"]
+}
+```
+
+场景智能体生成的证据需求：
+
+```json
+{
+  "trace_id": "tr_20250121_0001",
+  "agent": "attribution_check_agent",
+  "checklist": [
+    {"check": "timezone_alignment", "required_evidence": ["platform_timezone", "mmp_timezone"]},
+    {"check": "attribution_window", "required_evidence": ["platform_window", "mmp_window"]},
+    {"check": "event_mapping", "required_evidence": ["platform_event", "mmp_event"]},
+    {"check": "postback_delay", "required_evidence": ["postback_success_rate", "delayed_rate"]},
+    {"check": "data_refresh_lag", "required_evidence": ["last_sync_time"]},
+    {"check": "dedup_rule", "required_evidence": ["dedup_policy"]},
+    {"check": "campaign_mapping", "required_evidence": ["campaign_id_mapping"]}
+  ],
+  "minimum_evidence_rule": "main_conclusion_requires_current_metric_evidence_and_policy_reference"
+}
+```
+
+RAG 检索结果：
+
+```json
+{
+  "rag_query_id": "rq_001",
+  "rewritten_queries": {
+    "english_semantic_query": "AppsFlyer install discrepancy attribution window timezone postback delay campaign install lower than dashboard",
+    "chinese_semantic_query": "AppsFlyer 安装数 差异 归因窗口 时区 postback 延迟 平台报表",
+    "entity_query": "mmp:appsflyer event:install geo:US source_type:attribution_policy"
+  },
+  "selected_citations": [
+    {
+      "citation_id": "cit_001",
+      "chunk_id": "kb3_af_install_window_202501_v04_c02",
+      "source_type": "attribution_policy",
+      "title": "AppsFlyer install attribution window policy",
+      "effective_date": "2025-01-01",
+      "rerank_score": 0.91,
+      "why_selected": "same MMP, same event, reviewed, valid date"
+    },
+    {
+      "citation_id": "cit_002",
+      "chunk_id": "kb1_timezone_policy_global_v02_c01",
+      "source_type": "metric_definition",
+      "title": "Reporting timezone alignment SOP",
+      "effective_date": "2024-12-15",
+      "rerank_score": 0.87,
+      "why_selected": "timezone check required for dashboard vs MMP discrepancy"
+    }
+  ]
+}
+```
+
+工具返回与规则计算结果：
+
+```json
+{
+  "tool_results": [
+    {
+      "tool_name": "get_campaign_metrics",
+      "status": "success",
+      "data_freshness": "2025-01-21T01:10:00Z",
+      "result": {"platform_installs": 1250, "timezone": "UTC", "event_name": "install"}
+    },
+    {
+      "tool_name": "get_attribution_report",
+      "status": "success",
+      "data_freshness": "2025-01-21T01:30:00Z",
+      "result": {"mmp_installs": 900, "mmp": "appsFlyer", "timezone": "UTC-8", "attribution_window": "7d_click"}
+    },
+    {
+      "tool_name": "get_postback_status",
+      "status": "success",
+      "result": {"success_rate": 0.924, "delayed_rate": 0.068, "reject_rate": 0.008}
+    }
+  ],
+  "rule_outputs": {
+    "difference_rate": 0.28,
+    "difference_direction": "mmp_lower_than_platform",
+    "timezone_mismatch": true,
+    "postback_major_failure": false
+  }
+}
+```
+
+证据对象和诊断输出：
+
+```json
+{
+  "evidence_objects": [
+    {
+      "evidence_id": "ev_metric_001",
+      "source_type": "attribution_report",
+      "claim_supported": "MMP installs are 28.0% lower than platform installs for cmp_A on 2025-01-20.",
+      "confidence": 0.94,
+      "visibility": "internal",
+      "data_freshness": "2025-01-21T01:30:00Z"
+    },
+    {
+      "evidence_id": "ev_policy_001",
+      "source_type": "knowledge_chunk",
+      "claim_supported": "Timezone and attribution window must be aligned before comparing dashboard and MMP installs.",
+      "confidence": 0.91,
+      "citation_id": "cit_001",
+      "visibility": "internal"
+    }
+  ],
+  "diagnosis": {
+    "summary": "The 28.0% gap is confirmed. The strongest current hypothesis is timezone/window mismatch; postback health does not show a large-scale failure.",
+    "confirmed_facts": ["platform_installs=1250", "mmp_installs=900", "difference_rate=28.0%", "postback_success_rate=92.4%"],
+    "likely_causes": [
+      {"cause": "timezone_or_attribution_window_mismatch", "confidence": 0.78, "evidence_ids": ["ev_metric_001", "ev_policy_001"]},
+      {"cause": "mmp_refresh_lag", "confidence": 0.46, "evidence_ids": ["ev_metric_001"]}
+    ],
+    "ruled_out": [{"cause": "large_scale_postback_failure", "reason": "reject_rate=0.8%, delayed_rate=6.8%"}],
+    "next_actions": ["confirm MMP timezone setting", "compare install event mapping", "rerun report after next MMP sync"],
+    "customer_facing_allowed": false
+  }
+}
+```
 
 ## 5.3 研发与算法协作职责
 
@@ -395,20 +586,220 @@ L4 业务资产层
 | 稳定期 | 提升复用和覆盖 | 建立知识 Owner、月度复审、失效文档清理 |
 | 扩展期 | 支撑后续能力 | 将 postback、日志、素材、回复相关知识转交后续扩展 PRD 使用 |
 
-## 6.6 RAG 八段链路设计
+## 6.6 RAG 详细设计
 
-RAG 在本项目中不是独立回答模块，而是场景智能体获取上下文和证据的能力。RAG 输出不能直接等同于业务结论，必须和工具数据、规则判断、人工反馈一起进入 evidence object。
+RAG 在本项目中不是独立回答模块，而是场景智能体获取上下文和证据的能力。RAG 输出不能直接等同于业务结论，必须和工具数据、规则判断、人工反馈一起进入 evidence object。本节写到研发可拆任务的粒度：文档如何清洗、如何切 chunk、如何标注元数据、如何改写 query、如何召回、如何 rerank、如何转证据对象。
 
-| 链路 | 处理内容 | 关键设计 | 失败兜底 |
-| --- | --- | --- | --- |
-| 1. 数据来源接入 | SOP、指标口径、归因政策、历史工单、MMP 外部文档 | 每类来源绑定 owner、source_type、sensitivity_level、effective_date | 未审核文档只能进入草稿库，不参与线上回答 |
-| 2. 文档解析与清洗 | Markdown、PDF、飞书导出、工单文本 | 保留标题层级、表格、代码块和引用链接；去除客户隐私和无效模板噪音 | 解析失败进入人工处理队列，不静默入库 |
-| 3. Chunk 切分 | 按业务主题切分口径、步骤和案例 | 中文/混合文档以 400-800 token 为主，保留 80-120 token overlap；SOP 按步骤边界切分 | 过短 chunk 合并，过长 chunk 按标题和步骤二次切分 |
-| 4. 元数据与权限标注 | language、business_locale、entity_tags、audience、visibility、owner | 入库前写入账户/区域/客户可见范围；历史案例必须脱敏后才能进入可检索库 | 缺少权限标签的 chunk 默认不可线上召回 |
-| 5. 索引与存储 | Hybrid Search + Vector Search + BM25 | campaign ID、event、MMP 字段走关键词精确召回；语义问题走 embedding；统一写入版本号 | 向量索引失败时保留关键词检索，但降低置信度 |
-| 6. Query 改写与召回 | 根据用户问题、场景、实体和权限生成检索 query | 同时生成英文 query、中文 query、实体 query；先按权限预过滤，再召回 topK | 实体缺失时先追问，不用宽泛 query 召回 |
-| 7. Rerank 与引用选择 | 对候选 chunk 做重排、去重、冲突检测 | 优先选择 reviewed、最新、同区域、同 MMP、同场景的 chunk；过期文档降权 | 候选冲突时不直接下结论，输出冲突来源并要求人工确认 |
-| 8. 答案组装与反馈 | 将引用片段转为 evidence object 进入场景智能体 | 输出 citation_id、source_url、owner、effective_date、confidence 和引用片段 | 用户标记无效后进入 Badcase，关联 query、chunk 和模型版本 |
+### 6.6.1 总体参数
+
+| 配置项 | MVP 参数 | 说明 |
+| --- | --- | --- |
+| 文档存储 | 原文对象存储 + 结构化 metadata 表 + chunk 表 | 原文用于回溯，chunk 用于检索，metadata 用于权限和过滤 |
+| 向量模型 | OpenAI text-embedding-3-large；合规受限时切 bge-m3 或 Alibaba text-embedding-v3 | 模型切换必须重跑召回评测，不允许只替换模型名 |
+| 向量维度 | text-embedding-3-large 默认 3072；bge-m3 默认 1024 | 向量库 schema 需要按模型版本记录 dimension |
+| 关键词检索 | OpenSearch/Elasticsearch BM25 | 处理 campaign ID、event、MMP、错误码、字段名等精确召回 |
+| 混合召回 | BM25 + vector + metadata filter | 先权限过滤，再多路召回，再去重和 rerank |
+| 初召回数量 | BM25 top 30，vector top 40，entity exact top 20 | 合并去重后最多 60 个候选进入 rerank |
+| Rerank 候选上限 | 50 个 chunk | 超过 50 先按 metadata 和粗排分截断 |
+| 最终引用数量 | 主回答 3-6 条，最多 8 条 | 每个主结论至少绑定 1 条数据证据或知识引用 |
+| 最低引用阈值 | rerank_score >= 0.65 且 final_score >= 0.60 | 低于阈值不进入主结论，只能作为待确认 |
+| 缓存 Key | user_scope + normalized_query + source_version + retrieval_config_version | 防止跨权限复用缓存 |
+
+### 6.6.2 文档清洗与 Chunk 策略
+
+| 文档类型 | 解析方式 | 清洗规则 | Chunk 单元 | Chunk 参数 | 必填元数据 | 不入库/降权规则 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 投放排障 SOP | Markdown/飞书导出，按标题和有序列表解析 | 保留步骤编号、适用条件、排查顺序；删除会议寒暄、负责人闲聊、重复目录 | 单个排查步骤或一个小节 | 300-600 tokens，overlap 80；步骤不得跨 chunk | source_type=sop，issue_type，metric_tags，owner，reviewed_status | 无 owner、无生效日期、状态 draft 的 chunk 不进入线上召回 |
+| 指标口径文档 | 表格优先解析，保留公式和字段名 | 标准化指标名大小写；保留公式、分子分母、时间粒度；删除重复截图说明 | 一个指标定义或一组强相关指标 | 200-450 tokens，overlap 60；公式和例子必须同 chunk | source_type=metric_definition，metric_name，formula_version，effective_date | 公式缺失或版本冲突时只进草稿库 |
+| 归因政策/MMP 口径 | PDF/HTML/Markdown 结构化解析 | 保留 MMP、event、window、timezone、dedup、postback 相关段落；外部文档保留抓取时间 | 一个口径规则或一个限制条件 | 250-550 tokens，overlap 80；限制条件和例外必须同 chunk | source_type=attribution_policy，mmp，event_name，geo，window，effective_date | external doc 未人工确认时只能作为辅助引用 |
+| 历史工单/案例 | 工单字段结构化 + 正文脱敏 | 删除客户名、邮箱、合同、token、IP、raw log；保留问题、证据、根因、解决动作 | 一个完整案例摘要 | 350-700 tokens，overlap 0；案例不可拆散根因和解决动作 | source_type=historical_case，issue_type，root_cause，resolution_status，sensitivity_level | 未关闭工单、未脱敏、根因不明确的案例不进入相似案例召回 |
+| Postback/回调知识 | 错误码表 + SOP | 保留错误码、状态、重试规则、聚合解释；删除 raw callback URL 示例 | 一个错误码或一个状态解释 | 150-350 tokens，overlap 40 | source_type=postback_policy，error_code，event_name，severity | 含 token、secret、raw URL 的片段直接拦截 |
+| 外部 MMP 文档 | HTML/PDF 抓取 + 人工确认 | 保留标题、更新时间、URL、适用版本；去除导航、广告、cookie 文案 | 一个官方说明段落 | 300-600 tokens，overlap 80 | source_type=external_doc，vendor，crawl_time，confirmed_by | 未确认版本或来源不稳定时降权，不支撑强结论 |
+
+### 6.6.3 Chunk 数据结构
+
+```json
+{
+  "chunk_id": "kb3_af_install_window_202501_v04_c02",
+  "doc_id": "doc_af_policy_202501",
+  "doc_version": "v04",
+  "source_type": "attribution_policy",
+  "title": "AppsFlyer install attribution window policy",
+  "language": "en",
+  "business_locale": ["US", "global"],
+  "audience": "internal",
+  "sensitivity_level": "internal",
+  "reviewed_status": "reviewed",
+  "owner": "Ad Attribution PM",
+  "effective_date": "2025-01-01",
+  "expire_at": "2025-06-30",
+  "entity_tags": ["mmp:appsflyer", "event:install", "window:7d_click", "timezone"],
+  "permission_scope": {
+    "roles": ["adops", "am", "support"],
+    "regions": ["US", "global"],
+    "accounts": ["*"],
+    "restricted_customers": []
+  },
+  "chunk_text": "AppsFlyer install comparison must align attribution window and reporting timezone before comparing platform dashboard and MMP report...",
+  "token_count": 218,
+  "embedding_model": "text-embedding-3-large",
+  "embedding_dimension": 3072,
+  "created_at": "2025-01-05T10:00:00Z"
+}
+```
+
+### 6.6.4 Query 改写策略
+
+Query 改写由总控智能体完成，但只输出检索计划，不直接回答业务结论。
+
+| 改写类型 | 用途 | 样例 |
+| --- | --- | --- |
+| semantic_query_en | 英文语义召回 | `AppsFlyer install discrepancy attribution window timezone postback delay campaign installs lower than dashboard` |
+| semantic_query_zh | 中文/内部 SOP 召回 | `AppsFlyer 安装数 差异 归因窗口 时区 postback 延迟 平台报表` |
+| entity_query | 精确实体召回 | `mmp:appsflyer event:install geo:US source_type:attribution_policy` |
+| checklist_query | 场景核查项召回 | `timezone alignment attribution window event mapping dedup data refresh lag` |
+| case_query | 历史案例召回 | `issue_type:attribution_gap root_cause:timezone_or_window mmp:appsflyer event:install` |
+
+改写输出 schema：
+
+```json
+{
+  "retrieval_plan": {
+    "scenario": "attribution_discrepancy_check",
+    "must_have_entities": ["mmp", "event_name", "date_range", "campaign_id"],
+    "semantic_queries": [
+      {"language": "en", "query": "AppsFlyer install discrepancy attribution window timezone postback delay"},
+      {"language": "zh", "query": "AppsFlyer 安装数 差异 归因窗口 时区 postback 延迟"}
+    ],
+    "entity_filters": {
+      "source_type": ["attribution_policy", "metric_definition", "sop", "historical_case"],
+      "mmp": "appsflyer",
+      "event_name": "install",
+      "business_locale": ["US", "global"],
+      "reviewed_status": ["reviewed"],
+      "sensitivity_level_lte": "internal"
+    },
+    "permission_filter": {
+      "role": "am",
+      "account_id": "acct_1001",
+      "advertiser_id": "adv_2048",
+      "region": "US"
+    }
+  }
+}
+```
+
+### 6.6.5 召回路径
+
+召回必须先做权限过滤，再做内容召回。禁止先召回全部文档再让模型判断是否可见。
+
+```text
+用户 query + page context
+  -> 实体抽取和权限 scope
+  -> metadata pre-filter
+  -> BM25 精确召回 top 30
+  -> vector 语义召回 top 40
+  -> entity exact 召回 top 20
+  -> 合并去重，最多 60 个候选
+  -> rerank，最多 50 个候选
+  -> final_score 排序，输出 3-6 条引用
+```
+
+| 召回路径 | 适用内容 | 检索字段 | 初召回参数 | 排序侧重 |
+| --- | --- | --- | --- | --- |
+| BM25 | campaign ID、event、MMP、错误码、指标名 | title、entity_tags、chunk_text、metric_name、error_code | topK=30，minimum_should_match=60% | 精确命中和字段匹配 |
+| Vector | 自然语言问题、SOP、历史案例 | chunk_embedding | topK=40，cosine similarity | 语义相似度 |
+| Entity exact | mmp、event、geo、window、source_type | structured metadata | topK=20 | 强过滤和业务同场景 |
+| Case recall | 已解决历史案例 | issue_type、root_cause、entity_tags、resolution_status | topK=10，仅 closed/resolved | 相似问题和根因复用 |
+
+### 6.6.6 Rerank 策略
+
+Rerank 分两层：模型 rerank 负责语义相关性，规则 rerank 负责业务可信度和安全边界。
+
+```text
+final_score =
+  0.45 × model_rerank_score
++ 0.15 × vector_score
++ 0.15 × bm25_score
++ 0.10 × entity_match_score
++ 0.05 × freshness_score
++ 0.05 × authority_score
++ 0.05 × locale_match_score
+- penalty_score
+```
+
+| 分数 | 计算方式 | 说明 |
+| --- | --- | --- |
+| model_rerank_score | rerank 模型输出 0-1 | 判断 query 与 chunk 是否真的相关 |
+| vector_score | cosine similarity 归一化 | 保留语义相似度 |
+| bm25_score | BM25 归一化 | 强化字段、MMP、event、指标名精确匹配 |
+| entity_match_score | mmp/event/geo/window/source_type 命中比例 | 同 MMP、同 event、同 geo 优先 |
+| freshness_score | effective_date 越新越高，deprecated 为 0 | 防止引用旧口径 |
+| authority_score | reviewed > external_confirmed > draft | 强化内部审核文档 |
+| locale_match_score | US/SEA/EU/global 与问题匹配 | 防止拿其他区域政策回答 |
+| penalty_score | 过期、权限不完整、冲突、外部未确认 | 有硬风险时直接过滤 |
+
+硬过滤规则：
+
+1. `reviewed_status=draft` 不进入线上回答。
+2. `sensitivity_level` 高于用户权限时直接过滤。
+3. `effective_date` 晚于查询日期或 `expire_at` 早于查询日期时降权或过滤。
+4. 历史案例只能作为辅助证据，不能单独支撑主结论。
+5. external_doc 未人工确认时不能作为唯一引用。
+6. 同一主结论最多引用 2 条同源 chunk，避免重复文档刷屏。
+
+### 6.6.7 冲突检测与引用输出
+
+Rerank 后还要做冲突检测，避免把互相矛盾的口径一起塞给模型。
+
+| 冲突类型 | 检测方式 | 输出策略 |
+| --- | --- | --- |
+| 新旧口径冲突 | 同 source_type + same entity_tags + 不同 effective_date/window | 引用最新 reviewed 版本，旧版本只进入“历史口径差异”说明 |
+| MMP 口径冲突 | 同 event 不同 attribution_window | 展示 MMP 和平台窗口差异，不直接判定谁对谁错 |
+| 区域口径冲突 | business_locale 不同 | 优先同区域；无同区域时标记为 global reference |
+| 内外部文档冲突 | 内部 reviewed 与 external doc 不一致 | 主引用内部 reviewed，外部文档进入待确认 |
+| 历史案例冲突 | 相似案例根因不一致 | 只展示为“类似案例”，不支撑当前主因 |
+
+引用输出 schema：
+
+```json
+{
+  "citation_id": "cit_001",
+  "chunk_id": "kb3_af_install_window_202501_v04_c02",
+  "doc_id": "doc_af_policy_202501",
+  "source_type": "attribution_policy",
+  "title": "AppsFlyer install attribution window policy",
+  "selected_text": "Install comparison must align attribution window and reporting timezone before comparing platform dashboard and MMP report.",
+  "final_score": 0.88,
+  "score_breakdown": {
+    "model_rerank_score": 0.91,
+    "vector_score": 0.82,
+    "bm25_score": 0.77,
+    "entity_match_score": 1.0,
+    "freshness_score": 0.92,
+    "authority_score": 1.0,
+    "locale_match_score": 1.0,
+    "penalty_score": 0.0
+  },
+  "allowed_usage": "support_internal_diagnosis",
+  "cannot_use_for": ["customer_final_reply", "automated_account_action"]
+}
+```
+
+### 6.6.8 Evidence Object 组装规则
+
+RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object 后交给场景智能体。
+
+| 字段 | 生成规则 |
+| --- | --- |
+| evidence_id | `ev_kb_` + citation_id + trace_id hash |
+| source_type | 继承 chunk source_type |
+| claim_supported | 用一句话描述该引用能支撑什么判断，不能超过引用内容范围 |
+| confidence | `final_score` 映射，最高不超过 0.95 |
+| visibility | 继承 sensitivity_level 和用户权限结果 |
+| can_be_customer_facing | 默认 false，只有 public/external_confirmed 且人工审核后才可 true |
+| owner | 继承文档 owner |
+| retrieved_at | 检索时间 |
 
 ## 6.7 RAG 异常处理与冲突策略
 
