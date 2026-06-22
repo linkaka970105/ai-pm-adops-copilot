@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860" role="img" aria-labelledby="title desc">
   <title id="title">AdOps Copilot 投放归因排障端到端泳道图</title>
-  <desc id="desc">按用户、Copilot 总控、RAG 和场景智能体、数据工具系统、知识运营后台五个泳道展示投放归因排障的职责分工和流转关系。</desc>
+  <desc id="desc">按用户、Copilot 总控、场景智能体、RAG、数据与工具系统、知识运营后台五个泳道展示投放归因排障的职责分工和流转关系。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L9,3 z" fill="#344054"/>
@@ -47,8 +47,8 @@
 
   <text x="70" y="152" class="lane-label">用户 / AM / AdOps</text>
   <text x="70" y="284" class="lane-label">Copilot 总控</text>
-  <text x="70" y="416" class="lane-label">RAG 与场景智能体</text>
-  <text x="70" y="548" class="lane-label">数据与工具系统</text>
+  <text x="70" y="416" class="lane-label">场景智能体</text>
+  <text x="70" y="548" class="lane-label">RAG、数据与工具系统</text>
   <text x="70" y="680" class="lane-label">知识运营后台</text>
 
   <rect x="220" y="144" width="150" height="58" class="box blue"/>
@@ -79,25 +79,25 @@
   <text x="1075" y="300" text-anchor="middle" class="label">安全交付</text>
   <text x="1075" y="320" text-anchor="middle" class="small">证据 / 风险 / 摘要</text>
 
-  <rect x="405" y="408" width="150" height="58" class="box green"/>
-  <text x="480" y="432" text-anchor="middle" class="label">知识检索</text>
-  <text x="480" y="452" text-anchor="middle" class="small">SOP / 口径 / 案例</text>
-
   <rect x="660" y="408" width="220" height="58" class="box green"/>
   <text x="770" y="432" text-anchor="middle" class="label">场景智能体排查</text>
   <text x="770" y="452" text-anchor="middle" class="small">拆步骤 / 调工具 / 组织证据</text>
 
-  <rect x="300" y="540" width="170" height="58" class="box orange"/>
-  <text x="385" y="564" text-anchor="middle" class="label">报表与账户工具</text>
-  <text x="385" y="584" text-anchor="middle" class="small">Metrics / Status</text>
+  <rect x="235" y="540" width="150" height="58" class="box orange"/>
+  <text x="310" y="564" text-anchor="middle" class="label">知识检索</text>
+  <text x="310" y="584" text-anchor="middle" class="small">SOP / 口径 / 案例</text>
 
-  <rect x="560" y="540" width="170" height="58" class="box orange"/>
-  <text x="645" y="564" text-anchor="middle" class="label">归因与回传工具</text>
-  <text x="645" y="584" text-anchor="middle" class="small">MMP / Postback</text>
+  <rect x="440" y="540" width="170" height="58" class="box orange"/>
+  <text x="525" y="564" text-anchor="middle" class="label">报表与账户工具</text>
+  <text x="525" y="584" text-anchor="middle" class="small">Metrics / Status</text>
 
-  <rect x="820" y="540" width="150" height="58" class="box orange"/>
-  <text x="895" y="564" text-anchor="middle" class="label">证据对象</text>
-  <text x="895" y="584" text-anchor="middle" class="small">Evidence Object</text>
+  <rect x="675" y="540" width="170" height="58" class="box orange"/>
+  <text x="760" y="564" text-anchor="middle" class="label">归因与回传工具</text>
+  <text x="760" y="584" text-anchor="middle" class="small">MMP / Postback</text>
+
+  <rect x="930" y="540" width="150" height="58" class="box orange"/>
+  <text x="1005" y="564" text-anchor="middle" class="label">证据对象</text>
+  <text x="1005" y="584" text-anchor="middle" class="small">Evidence Object</text>
 
   <rect x="540" y="688" width="160" height="58" class="box purple"/>
   <text x="620" y="712" text-anchor="middle" class="label">Prompt 与工具更新</text>
@@ -121,14 +121,14 @@
   <path d="M740 305 H775" class="arrow"/>
 
   <path d="M850 334 V386 H770 V408" class="arrow arrow-green"/>
-  <path d="M770 466 V500 H385 V540" class="arrow arrow-orange"/>
-  <path d="M770 466 V500 H645 V540" class="arrow arrow-orange"/>
-  <path d="M770 408 V386 H480 V408" class="arrow arrow-green"/>
+  <path d="M735 466 V500 H310 V540" class="arrow arrow-orange"/>
+  <path d="M770 466 V500 H525 V540" class="arrow arrow-orange"/>
+  <path d="M805 466 V500 H760 V540" class="arrow arrow-orange"/>
 
-  <path d="M555 437 H660" class="arrow arrow-green"/>
-  <path d="M470 569 H560" class="arrow arrow-orange"/>
-  <path d="M730 569 H820" class="arrow arrow-orange"/>
-  <path d="M895 540 V500 H770 V466" class="arrow arrow-orange"/>
+  <path d="M385 569 H440" class="arrow arrow-orange"/>
+  <path d="M610 569 H675" class="arrow arrow-orange"/>
+  <path d="M845 569 H930" class="arrow arrow-orange"/>
+  <path d="M1005 540 V500 H770 V466" class="arrow arrow-orange"/>
 
   <path d="M880 437 H1075 V334" class="arrow arrow-green"/>
   <path d="M1075 276 V202" class="arrow arrow-blue"/>
