@@ -899,26 +899,66 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 | 语言识别 | 支持英文、中文、中英混合输入，输出语言按入口控制 |
 | 风险分级 | 区分低风险查询、中风险诊断、高风险客户承诺或操作建议 |
 | 信息完整度检查 | 判断是否缺少 campaign、account、time range、metric、MMP、event 等关键字段 |
-| 工具约束 | 生成候选工具范围、权限要求、调用约束和失败兜底；具体排查步骤由场景智能体细化 |
+| 工具约束 | 生成候选工具范围、权限要求、调用约束和失败兜底；具体排查步骤由固定 workflow 和场景智能体共同处理 |
 | 安全拦截 | 越权、无证据、高风险动作、客户可见表达触发人工确认或转人工 |
 
 ### 7.1.4 工作流程
 
 ```text
 用户输入
-  -> 语言识别
-  -> 意图分类
-  -> 实体抽取
-  -> 范围判断
-  -> 信息完整度检查
-  -> 权限校验
-  -> 场景智能体选择
-  -> 下发权限、范围、风险和候选工具约束
-  -> 场景智能体拆解排查步骤并调用工具
-  -> 证据聚合
-  -> 安全检查
-  -> 输出诊断或追问
+  -> 创建 trace 和会话上下文
+  -> 权限与安全前置检查
+  -> LLM 输出意图、实体、风险信号、置信度组件和候选工具约束
+  -> Schema Guard 校验字段枚举和 JSON 合法性
+  -> 规则层复算 missing_fields、risk_level_final、confidence_final、next_action_final
+  -> Workflow Dispatcher 选择固定 workflow
+  -> 执行对应 workflow
+  -> 总控安全交付
+  -> 输出诊断、知识答案、追问、拒绝或范围外提示
+  -> 记录 trace、反馈和 Badcase
 ```
+
+#### 7.1.4.1 总控 workflow 明细
+
+总控 workflow 的核心不是让大模型直接决定下一步，而是把模型输出转成可校验、可回滚的状态机。每一步都有明确输入、处理、输出和失败分支。
+
+| 步骤 | 模块 | 输入 | 处理 | 输出 | 失败/兜底 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `session_init` | 用户 query、入口、页面上下文、用户角色 | 生成 `trace_id`，继承页面 account/campaign/app 上下文，识别入口语言 | `session_context` | 创建失败时提示稍后重试，不调用模型 |
+| 2 | `pre_guard` | 用户角色、账户范围、工具权限、敏感词规则 | 做基础权限、登录态、黑名单字段、raw log/token/合同等敏感请求检测 | `pre_guard_result` | 明确越权或敏感 raw data 时直接进入 `wf_refusal_v1` |
+| 3 | `llm_route_candidate` | query、上下文、权限摘要、工具注册表、phase scope | LLM 输出 intent、entities、risk_signals、confidence_components、tool_constraints | `routing_candidate` | 模型超时则进入 `wf_clarification_v1` 或提示重试 |
+| 4 | `schema_guard` | `routing_candidate` | 校验 JSON、枚举、字段类型、工具名和参数白名单 | `routing_schema_checked` | 非法字段丢弃；关键字段非法则进入 Badcase |
+| 5 | `rule_normalizer` | schema 后结果、intent 必填实体、权限矩阵 | 复算 `missing_fields_final`、`risk_level_final`、`confidence_final`、`next_action_final` | `routing_final` | 规则和模型冲突时以规则结果为准并记录差异 |
+| 6 | `workflow_dispatcher` | `routing_final` | 根据 intent、风险、缺字段和范围选择固定 workflow | `selected_workflow` | 无匹配 workflow 时进入 `wf_out_of_scope_fallback_v1` |
+| 7 | `workflow_executor` | workflow ID、工具约束、证据需求 | 执行知识检索、只读工具查询、证据对象生成或追问/拒绝 | workflow 输出 | 工具失败时按实时 API > 缓存 > ETL > 人工上传 > 待补充降级 |
+| 8 | `delivery_guard` | workflow 输出、证据对象、安全规则 | 检查无证据强答、客户可见话术、越权字段、敏感信息 | 可交付结果 | 高风险内容隐藏并转人工确认 |
+| 9 | `trace_feedback` | 输出、模型/Prompt/工具/知识版本、用户反馈 | 写入日志、成本、延迟、Badcase 和评测样本 | 可复盘 trace | 无反馈不计入有效会话 |
+
+#### 7.1.4.2 Intent 到 workflow 的路由表
+
+| intent | 是否当前范围内 | selected_workflow | 主要处理 | 输出 |
+| --- | --- | --- | --- | --- |
+| `campaign_performance_diagnosis` | 是 | `wf_campaign_performance_v1` | 固定检查预算、消耗、曝光、点击、转化、CPA/ROI、账户状态、素材状态、归因延迟 | 投放异常诊断卡 |
+| `attribution_discrepancy_check` | 是 | `wf_attribution_discrepancy_v1` | 固定检查时区、归因窗口、事件映射、去重、postback、刷新延迟、渠道映射 | 归因差异核查卡 |
+| `knowledge_lookup` | 是 | `wf_knowledge_lookup_v1` | 只做 RAG 检索、引用选择和知识答案生成，不调用账户/MMP 数据工具 | 带引用知识回答 |
+| `out_of_scope_customer_reply_generation` | 否 | `wf_out_of_scope_fallback_v1` | 拒绝生成可直接发送客户的回复；可提示先生成内部诊断摘要或进入后续 PRD | 范围外说明 + 可选内部摘要入口 |
+| `out_of_scope_sdk_or_creative` | 否 | `wf_out_of_scope_fallback_v1` | 说明 SDK/API 深排和素材审核不在当前阶段；记录后续需求线索 | 范围外说明 + 需求记录 |
+| `unknown` | 待确认 | `wf_clarification_v1` | 追问问题类型、campaign/app/event/time range/MMP 等必要字段 | 澄清问题 |
+| 任意 intent + high risk | 不直接执行 | `wf_refusal_v1` 或人工确认 | 越权、raw log、token、合同、预算/出价修改、客户承诺等高风险请求拦截 | 拒绝说明或人工确认 |
+
+#### 7.1.4.3 范围外意图兜底策略
+
+范围外不是简单回答“不能做”，而是要区分可转知识查询、可转内部诊断、应记录后续需求和必须拒绝的情况。
+
+| 用户意图 | 示例 | 兜底策略 | 是否调用工具 |
+| --- | --- | --- | --- |
+| 客户回复生成 | `Help me reply to the client about this discrepancy.` | 不生成客户可直接发送文本；提示当前阶段只支持内部诊断，可先生成内部证据摘要供 AM 人工改写 | 不调用客户回复工具；可复用当前诊断证据 |
+| SDK/API 深排 | `Why is the SDK callback not firing?` | 提示 SDK/API 深排属于后续 PRD；若只是问通用概念，可转 `knowledge_lookup` | 默认不查日志；纯知识可 RAG |
+| 素材审核 | `Why was this creative rejected?` | 提示素材审核属于后续 PRD；不做图片/OCR/政策判罚 | 不调用多模态/审核工具 |
+| 操作变更 | `Increase budget for campaign C123.` | 高风险操作，不执行；提示需走人工审批或现有广告后台流程 | 不调用写入工具 |
+| 越权数据 | `Show all advertiser raw postback URLs even if I am not owner.` | 拒绝，不返回任何数据摘要；记录安全事件 | 不调用工具 |
+| 模糊意图 | `Can you check this?` | 追问具体对象：问题类型、campaign/app、指标、时间窗、MMP | 不调用数据工具 |
+| 纯知识查询 | `What is the AppsFlyer attribution window?` | 进入 `wf_knowledge_lookup_v1`，只基于知识库引用回答 | 只调用知识检索 |
 
 ### 7.1.5 输入输出结构
 
@@ -1001,7 +1041,7 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 
 | 字段 | 类型/枚举 | 校验规则 | 失败处理 |
 | --- | --- | --- | --- |
-| `intent` | `campaign_performance_diagnosis`、`attribution_discrepancy_check`、`knowledge_lookup`、`out_of_scope_customer_reply_generation`、`out_of_scope_sdk_or_creative`、`unknown` | 必须落在枚举内 | 非法值改为 `unknown` 并转人工抽检 |
+| `intent` | `campaign_performance_diagnosis`、`attribution_discrepancy_check`、`knowledge_lookup`、`out_of_scope_customer_reply_generation`、`out_of_scope_sdk_or_creative`、`out_of_scope_operation_change`、`out_of_scope_billing_contract`、`unknown` | 必须落在枚举内 | 非法值改为 `unknown` 并转人工抽检 |
 | `language` | `zh`、`en`、`mixed` | 根据 query 主要语言判断 | 默认跟随用户入口语言 |
 | `entities` | object | 字段固定，不允许新增敏感字段 | 未识别填 `null` |
 | `missing_fields` | array | 只能包含 `account_id`、`campaign_id`、`app_id`、`mmp`、`metric`、`event_name`、`time_range`、`timezone` | 关键字段缺失时 `next_action=ask_clarification` |
@@ -1012,6 +1052,7 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 | `confidence_final` | number，0-1 | 由 workflow 按公式复算 | 不采用模型自由自评 |
 | `tool_constraints` | array | 工具必须存在于 `available_tools`，参数必须在 allowed_params | 非法工具删除；关键工具缺失则追问或降级 |
 | `next_action` | `route_to_workflow`、`ask_clarification`、`refuse`、`out_of_scope` | 与 intent、missing_fields、risk_level_final 一致 | 不一致时规则层纠正 |
+| `selected_workflow` | `wf_campaign_performance_v1`、`wf_attribution_discrepancy_v1`、`wf_knowledge_lookup_v1`、`wf_clarification_v1`、`wf_refusal_v1`、`wf_out_of_scope_fallback_v1` | 由规则层根据 intent、risk 和缺字段最终确定 | 不采用模型未校验结果 |
 
 风险信号枚举：
 
@@ -1556,20 +1597,141 @@ confidence =
 | 强结论控制 | 缺少 MMP 数据时不得输出确定原因 |
 | 灰度范围 | 先覆盖 install discrepancy 和 event discrepancy |
 
-## 7.4 需求 3：知识库治理与 Badcase 回流
+## 7.4 需求 3：纯知识查询与引用回答
 
 ### 7.4.1 背景
 
-投放归因排障助手上线后的核心竞争力不只来自模型，而来自持续沉淀的业务知识、真实 Badcase、评测样本和可复用工作流。如果缺少治理机制，知识库会很快失效，Prompt 迭代无法验证，模型切换也没有客观依据。
+一线 AdOps、AM 和技术支持并不总是提出排障问题，也经常提出纯知识问题，例如“AppsFlyer 的 attribution window 是什么”“OEM 广告 install 口径如何定义”“postback delay 常见原因有哪些”。这类问题不需要读取当前账户数据，也不应该进入投放诊断或归因核对 workflow，否则会增加模型成本、工具调用和权限复杂度。
+
+纯知识查询属于当前 PRD 范围内，但它是低风险 RAG workflow，不是排障 workflow。系统只基于已审核知识、SOP、指标口径、归因政策和历史案例摘要回答，并展示引用；如果知识库没有可靠来源，则明确提示暂无可靠口径，不让模型自由编。
 
 ### 7.4.2 功能目标
+
+1. 支持广告投放、指标口径、归因窗口、MMP 概念、postback 状态、平台规则等纯知识查询。
+2. 输出带引用来源的中英双语知识答案。
+3. 不调用账户、MMP、postback、报表等数据工具，避免把低风险知识查询升级成中风险诊断。
+4. 当用户问题从“知识查询”转为“查某个 campaign 当前情况”时，重新进入总控路由并切换到排障 workflow。
+5. 将无答案、引用无效、知识冲突的问题回流到知识治理和 Badcase。
+
+### 7.4.3 适用与不适用范围
+
+| 类型 | 示例 | 处理方式 |
+| --- | --- | --- |
+| 适用：概念解释 | `What is postback delay?` | RAG 检索 SOP/FAQ，输出概念、常见原因和引用 |
+| 适用：口径查询 | `What attribution window do we use for OEM campaigns?` | 检索归因口径，输出生效版本和适用范围 |
+| 适用：流程查询 | `How should I check an install discrepancy first?` | 输出标准核查步骤和引用，不查具体账户 |
+| 不适用：当前账户数据 | `Why did campaign C123 installs drop yesterday?` | 路由到投放诊断 |
+| 不适用：平台/MMP 当前差异 | `AppsFlyer shows 900 but platform shows 1250, why?` | 路由到归因核对 |
+| 不适用：客户回复 | `Help me reply to client.` | 当前 PRD 范围外，进入兜底 |
+| 不适用：SDK/API 深排 | `Why SDK callback failed?` | 后续 PRD 范围，进入兜底或纯知识解释 |
+
+### 7.4.4 工作流程
+
+```text
+总控识别 knowledge_lookup
+  -> 校验仅需 knowledge_read 权限
+  -> Query 改写：英文语义 query、中文语义 query、实体 query
+  -> RAG 权限过滤和 source type 白名单
+  -> Hybrid Search + Vector Search + Entity Match
+  -> Rerank 选择 1-5 条引用
+  -> 生成 citation 和 evidence object
+  -> 知识回答生成
+  -> 引用完整性和安全检查
+  -> 用户反馈：有帮助 / 无帮助 / 知识缺失 / 引用错误
+```
+
+### 7.4.5 输入输出结构
+
+```json
+{
+  "input": {
+    "intent": "knowledge_lookup",
+    "user_query": "What attribution window do we use for OEM campaigns?",
+    "language": "en",
+    "permission_scope": {"knowledge_read": true},
+    "source_type_scope": ["attribution_policy", "metric_definition", "sop", "faq"],
+    "locale": "global"
+  },
+  "output": {
+    "answer_type": "knowledge_answer",
+    "answer": "For OEM campaigns, the attribution window should follow the current OEM attribution policy. The answer must cite the effective policy version.",
+    "citations": [
+      {
+        "citation_id": "cit_oem_attr_001",
+        "title": "OEM attribution window policy",
+        "source_type": "attribution_policy",
+        "effective_date": "2025-01-01",
+        "owner": "AdOps Policy"
+      }
+    ],
+    "confidence_final": 0.82,
+    "limitations": ["This answer explains the general policy and does not check any specific campaign data."],
+    "next_actions": ["If you need to check a specific campaign, provide campaign_id, app_id, event_name and time range."]
+  }
+}
+```
+
+### 7.4.6 Prompt 设计
+
+| 变量 | 填入内容 | 主要用途 |
+| --- | --- | --- |
+| `{{user_query}}` | 用户原始知识问题 | 识别概念、口径、流程或 FAQ |
+| `{{rewritten_queries}}` | 中英文语义 query 和实体 query | 提高中英混合知识召回 |
+| `{{selected_citations}}` | RAG 选择的引用列表 | 生成带来源答案 |
+| `{{source_type_scope}}` | 允许引用的文档类型 | 防止引用无关历史案例或范围外资料 |
+| `{{language_preference}}` | 用户语言和系统界面语言 | 决定回答语言 |
+
+```text
+角色：
+你是 AdOps Copilot 的知识查询助手，只回答投放、归因、指标口径和平台流程相关的纯知识问题。
+
+任务：
+1. 只能基于 selected_citations 回答。
+2. 必须给出引用标题、版本或生效时间。
+3. 必须说明答案是否是通用口径，不代表当前 campaign 的实时诊断。
+4. 如果用户问题实际需要查账户、campaign、MMP 或 postback 当前数据，不要回答结论，要求重新进入排障 workflow。
+
+禁止：
+- 不得编造政策、窗口、指标公式或平台规则。
+- 不得调用或建议调用账户数据工具。
+- 不得生成客户可直接发送话术。
+- 不得引用 deprecated 或低于阈值的文档。
+```
+
+### 7.4.7 兜底规则
+
+| 情况 | 处理 |
+| --- | --- |
+| 无可靠引用 | 输出“知识库暂无可靠口径”，提供建议补充的文档类型和 Owner |
+| 引用冲突 | 展示冲突来源、生效时间和 Owner，不输出确定口径 |
+| 用户追问具体账户 | 回到总控，重新识别为投放诊断或归因核对 |
+| 用户要求客户回复 | 提示当前阶段不生成客户可发送文本 |
+| 知识疑似过期 | 标记 Badcase，进入知识治理后台 |
+
+### 7.4.8 验收与灰度
+
+| 项目 | 标准 |
+| --- | --- |
+| 引用覆盖率 | 知识回答 95% 以上带有效引用 |
+| 无引用强答率 | 低于 3% |
+| 知识查询意图准确率 | 黄金集准确率 90% 以上 |
+| 范围切换准确率 | 具体账户问题不得误留在 knowledge_lookup |
+| 用户反馈 | 有帮助率灰度期达到 60% 以上 |
+
+## 7.5 需求 4：知识库治理与 Badcase 回流
+
+### 7.5.1 背景
+
+投放归因排障助手上线后的核心竞争力不只来自模型，而来自持续沉淀的业务知识、真实 Badcase、评测样本和可复用工作流。如果缺少治理机制，知识库会很快失效，Prompt 迭代无法验证，模型切换也没有客观依据。
+
+### 7.5.2 功能目标
 
 1. 建立投放和归因知识从创建、审核、发布、废弃到回滚的全生命周期。
 2. 将用户反馈、错误回答、人工修正转化为 Badcase。
 3. 把 Badcase 纳入评测集、Prompt 优化和知识库修订。
 4. 支持模型、Prompt、工具和知识版本的对比实验。
 
-### 7.4.3 核心功能
+### 7.5.3 核心功能
 
 | 功能 | 说明 |
 | --- | --- |
@@ -1580,7 +1742,7 @@ confidence =
 | 修复闭环 | 分派 Owner，记录修复版本和回归结果 |
 | 评测集管理 | 将典型 Badcase 加入黄金集或压力集 |
 
-### 7.4.4 Badcase 流程
+### 7.5.4 Badcase 流程
 
 ```text
 用户标记无效
@@ -1592,11 +1754,11 @@ confidence =
   -> 发布新版本并关闭 Badcase
 ```
 
-### 7.4.5 Judge AI 评估 Prompt 设计
+### 7.5.5 Judge AI 评估 Prompt 设计
 
 本需求对应任务四“Judge AI 评估”。Judge AI 属于 Badcase、评测和版本治理链路，不作为正常在线业务流程中每次回答的必经节点。它主要用于离线评测、灰度回归、人工抽检、Badcase 复盘和模型/Prompt 版本对比，负责检查证据、完整性、安全和可执行性，并把阻塞问题转化为 Badcase 或人工复核任务。
 
-#### 7.4.5.1 变量填充
+#### 7.5.5.1 变量填充
 
 | 变量 | 填入内容 | 主要用途 |
 | --- | --- | --- |
@@ -1647,7 +1809,7 @@ confidence =
 }
 ```
 
-#### 7.4.5.2 输入示例
+#### 7.5.5.2 输入示例
 
 ```json
 {
@@ -1660,7 +1822,7 @@ confidence =
 }
 ```
 
-#### 7.4.5.3 输出示例
+#### 7.5.5.3 输出示例
 
 ```json
 {
@@ -1682,7 +1844,7 @@ confidence =
 }
 ```
 
-#### 7.4.5.4 Prompt 版本、评测与上线规则
+#### 7.5.5.4 Prompt 版本、评测与上线规则
 
 | 阶段 | 要求 | 通过条件 |
 | --- | --- | --- |
@@ -1693,7 +1855,7 @@ confidence =
 | 全量上线 | 纳入 Prompt 管理后台和回归测试 | 支持回滚，Badcase 可追踪到版本 |
 | 回滚 | 出现安全问题、质量显著退化或成本异常 | 立即回到上一稳定版本并冻结新流量 |
 
-### 7.4.6 验收与灰度
+### 7.5.6 验收与灰度
 
 | 项目 | 标准 |
 | --- | --- |
@@ -1760,11 +1922,11 @@ confidence =
 
 | 场景 | 首选路径 | 合规受限时的替代路径 | 产品影响 |
 | --- | --- | --- | --- |
-| 总控路由、Query 改写 | GPT-4o mini | Qwen2.5-72B-Instruct、GLM-4-Plus | 重点回归 JSON 合法率和中英混合实体识别 |
-| 投放诊断总结 | GPT-4o mini + 规则引擎 | Qwen2.5-72B-Instruct、DeepSeek-V3 | 需要加强证据引用和禁止因果过度表达 |
-| 复杂归因推理 | GPT-4o / DeepSeek-R1 | DeepSeek-R1、Qwen QwQ、Kimi-k1.5 | 延迟可能上升，需通过异步任务或流式进度降低等待感 |
-| Embedding | text-embedding-3-large | BAAI bge-m3、Alibaba text-embedding-v3 | 需要重跑召回评测，不能只替换模型名 |
-| Rerank | Cohere Rerank 3.5 | BAAI bge-reranker-v2-m3、Alibaba gte-rerank | 重点验证引用准确率和冲突文档排序 |
+| 总控路由、Query 改写 | Qwen2.5-72B-Instruct 或 DeepSeek-V3 | GLM-4-Plus、GPT-4o mini 对照 | 重点回归 JSON 合法率、中英混合实体识别和 workflow 分流准确率 |
+| 投放诊断总结 | DeepSeek-V3 + 规则引擎 | Qwen2.5-72B-Instruct、GPT-4o mini 对照 | 需要加强证据引用和禁止因果过度表达 |
+| 复杂归因推理 | DeepSeek-R1/DeepSeek-Reasoner | Qwen QwQ、GPT-4o 对照、Kimi-k1.5 | 延迟可能上升，需通过异步任务或流式进度降低等待感 |
+| Embedding | BAAI bge-m3 或 Alibaba text-embedding-v3 | text-embedding-3-large 对照 | 需要重跑召回评测，不能只替换模型名 |
+| Rerank | BAAI bge-reranker-v2-m3 或 Alibaba gte-rerank | Cohere Rerank 3.5 对照 | 重点验证引用准确率和冲突文档排序 |
 
 模型切换不允许影响业务安全边界：权限过滤、工具网关、证据对象、规则计算和人工确认都在模型外部实现。这样即使更换模型，核心风控和审计能力仍然可复用。
 
@@ -1999,10 +2161,11 @@ confidence =
 | 验证项 | 测试方式 | 当前样例结果 |
 | --- | --- | --- |
 | 模型可用性 | 先请求 `/v1/models`，确认目标模型存在 | `gpt-5.5` 可用 |
-| 路由 case | 归因差异、越权 raw log、中文缺 campaign 三类 query | 3 个路由 case 通过 |
+| 路由 case | 纯知识查询、归因差异、越权 raw log、中文缺 campaign 四类 query | 4 个路由 case 通过 |
 | 风险等级 | 模型输出 `risk_signals`，规则层复算 `risk_level_final` | 通过，越权 case 为 high |
 | 置信度 | 模型输出组件分，workflow 按公式复算 `confidence_final` | 通过，并发现权限拦截 case 需要规则归一 |
 | 缺字段与下一步动作 | 模型输出 `missing_fields` 和 `next_action`，workflow 按 intent 必填实体复算 | 通过；中文缺 campaign/account case 最终进入 `ask_clarification` |
+| Workflow 分流 | 规则层复算 `selected_workflow_final` | 通过；知识查询进入 `wf_knowledge_lookup_v1`，归因核对进入 `wf_attribution_discrepancy_v1` |
 | 诊断输出 | 固定工具结果：平台 installs=1250、MMP installs=900、postback success=92.4%、delay=6.8% | 归因诊断 case 通过，主因排序为 timezone mismatch，postback delay 为次要可能 |
 | 证据引用 | 检查输出是否引用 `ev_metric_001`、`ev_policy_001` | 通过 |
 
@@ -2286,7 +2449,7 @@ confidence =
 | API 端点 | `http://127.0.0.1:8317/v1` |
 | 测试模型 | `gpt-5.5` |
 | 执行命令 | `node .\03_prd\eval\adops_attribution_prompt_e2e.mjs` |
-| 测试范围 | 3 个总控路由 case + 1 个归因诊断 case |
+| 测试范围 | 4 个总控路由 case + 1 个归因诊断 case |
 
 本测试不是为了证明 `gpt-5.5` 是生产选型，而是为了验证 prompt、schema、risk/confidence 规则和 workflow 边界是否可以被程序化回归。生产环境仍按第 8 节优先评估 Qwen、DeepSeek、GLM 等中国厂商模型。
 

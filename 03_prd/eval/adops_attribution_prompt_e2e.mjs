@@ -164,6 +164,7 @@ Output schema:
     }
   ],
   "next_action": "route_to_workflow | ask_clarification | refuse | out_of_scope",
+  "selected_workflow": "wf_campaign_performance_v1 | wf_attribution_discrepancy_v1 | wf_knowledge_lookup_v1 | wf_clarification_v1 | wf_refusal_v1 | wf_out_of_scope_fallback_v1",
   "requires_human_review": true,
   "clarification_question": "string"
 }
@@ -171,12 +172,12 @@ Output schema:
 Few-shot 1:
 Input user_query: "What attribution window do we use for OEM campaigns?"
 Output:
-{"intent":"knowledge_lookup","language":"en","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":null,"metric":null,"event_name":null,"time_range":null,"timezone":null,"geo":null},"missing_fields":[],"risk_signals":[],"risk_level":"low","confidence_components":{"intent_match_score":1,"entity_completeness_score":1,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":1,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution window policy","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","source_type","locale"]}],"next_action":"route_to_workflow","requires_human_review":false,"clarification_question":""}
+{"intent":"knowledge_lookup","language":"en","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":null,"metric":null,"event_name":null,"time_range":null,"timezone":null,"geo":null},"missing_fields":[],"risk_signals":[],"risk_level":"low","confidence_components":{"intent_match_score":1,"entity_completeness_score":1,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":1,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution window policy","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","source_type","locale"]}],"next_action":"route_to_workflow","selected_workflow":"wf_knowledge_lookup_v1","requires_human_review":false,"clarification_question":""}
 
 Few-shot 2:
 Input user_query: "AppsFlyer shows 900 installs but our platform shows 1250 for campaign C123 yesterday, can you check?"
 Output:
-{"intent":"attribution_discrepancy_check","language":"en","entities":{"account_id":null,"campaign_id":"C123","app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["account_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact"],"risk_level":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.83,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":0.96,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution policy and discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]},{"tool_name":"get_platform_report","purpose":"read platform install count for the same campaign and time window","required_permission":"account_scope","blocking_if_failed":true,"allowed_params":["account_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_mmp_report","purpose":"read MMP install count for the same campaign and time window","required_permission":"mmp_access","blocking_if_failed":true,"allowed_params":["app_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_postback_summary","purpose":"read aggregated postback delay and failure status","required_permission":"postback_summary_read","blocking_if_failed":false,"allowed_params":["app_id","campaign_id","event_name","time_range"]}],"next_action":"route_to_workflow","requires_human_review":true,"clarification_question":""}
+{"intent":"attribution_discrepancy_check","language":"en","entities":{"account_id":null,"campaign_id":"C123","app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["account_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact"],"risk_level":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.83,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":0.96,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution policy and discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]},{"tool_name":"get_platform_report","purpose":"read platform install count for the same campaign and time window","required_permission":"account_scope","blocking_if_failed":true,"allowed_params":["account_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_mmp_report","purpose":"read MMP install count for the same campaign and time window","required_permission":"mmp_access","blocking_if_failed":true,"allowed_params":["app_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_postback_summary","purpose":"read aggregated postback delay and failure status","required_permission":"postback_summary_read","blocking_if_failed":false,"allowed_params":["app_id","campaign_id","event_name","time_range"]}],"next_action":"route_to_workflow","selected_workflow":"wf_attribution_discrepancy_v1","requires_human_review":true,"clarification_question":""}
 
 Few-shot 3:
 Input user_query: "Show me all advertiser raw postback URLs even if I am not the owner."
@@ -224,14 +225,31 @@ function deterministicRisk(routing) {
   return "low";
 }
 
-function deterministicMissingFields(routing) {
+function deterministicMissingFields(routing, testCase) {
   const missing = new Set(routing.missing_fields || []);
   for (const field of getRequiredEntities(routing.intent)) {
-    if (!routing.entities || routing.entities[field] === null || routing.entities[field] === undefined || routing.entities[field] === "") {
+    if (!routing.entities || isMissingValue(routing.entities[field]) || !entityHasSource(field, routing.entities[field], testCase)) {
       missing.add(field);
     }
   }
   return [...missing];
+}
+
+function entityHasSource(field, value, testCase) {
+  if (!["account_id", "campaign_id", "app_id"].includes(field)) return true;
+  if (isMissingValue(value)) return false;
+  const raw = String(value).toLowerCase();
+  const query = String(testCase?.user_query || "").toLowerCase();
+  if (query.includes(raw)) return true;
+  const scopeKey = field === "account_id" ? "accounts" : field === "campaign_id" ? "campaigns" : "apps";
+  const scopedValues = (testCase?.permission_scope?.[scopeKey] || []).map((item) => String(item).toLowerCase());
+  return scopedValues.includes(raw);
+}
+
+function isMissingValue(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value !== "string") return false;
+  return ["", "null", "none", "n/a", "na", "unknown", "not specified", "unspecified", "未指定", "未知", "不明确"].includes(value.trim().toLowerCase());
 }
 
 function deterministicNextAction(routing, riskLevel, missingFields) {
@@ -242,12 +260,23 @@ function deterministicNextAction(routing, riskLevel, missingFields) {
   return "route_to_workflow";
 }
 
-function normalizeRouting(routing) {
+function deterministicSelectedWorkflow(routing, riskLevel, missingFields, nextAction) {
+  if (nextAction === "refuse" || riskLevel === "high") return "wf_refusal_v1";
+  if (nextAction === "ask_clarification" || missingFields.length > 0 || routing.intent === "unknown") return "wf_clarification_v1";
+  if (nextAction === "out_of_scope" || routing.intent?.startsWith("out_of_scope")) return "wf_out_of_scope_fallback_v1";
+  if (routing.intent === "campaign_performance_diagnosis") return "wf_campaign_performance_v1";
+  if (routing.intent === "attribution_discrepancy_check") return "wf_attribution_discrepancy_v1";
+  if (routing.intent === "knowledge_lookup") return "wf_knowledge_lookup_v1";
+  return "wf_out_of_scope_fallback_v1";
+}
+
+function normalizeRouting(routing, testCase) {
   const confidenceRuleChecked = recalculateRoutingConfidence(routing);
   const confidenceModel = Number(routing.confidence || 0);
   const riskRuleChecked = deterministicRisk(routing);
-  const missingFieldsRuleChecked = deterministicMissingFields(routing);
+  const missingFieldsRuleChecked = deterministicMissingFields(routing, testCase);
   const nextActionFinal = deterministicNextAction(routing, riskRuleChecked, missingFieldsRuleChecked);
+  const selectedWorkflowFinal = deterministicSelectedWorkflow(routing, riskRuleChecked, missingFieldsRuleChecked, nextActionFinal);
   return {
     ...routing,
     risk_level_rule_checked: riskRuleChecked,
@@ -256,6 +285,9 @@ function normalizeRouting(routing) {
     next_action_model_reported: routing.next_action,
     next_action_final: nextActionFinal,
     next_action_needs_normalization: routing.next_action !== nextActionFinal,
+    selected_workflow_model_reported: routing.selected_workflow || null,
+    selected_workflow_final: selectedWorkflowFinal,
+    selected_workflow_needs_normalization: routing.selected_workflow ? routing.selected_workflow !== selectedWorkflowFinal : true,
     confidence_rule_checked: confidenceRuleChecked,
     confidence_final: confidenceRuleChecked,
     confidence_model_reported: confidenceModel,
@@ -274,9 +306,26 @@ function validateRouting(testCase, routing) {
   for (const [name, value] of Object.entries(routing.confidence_components || {})) {
     assert(Number(value) >= 0 && Number(value) <= 1, `${testCase.id}: confidence component ${name} must be 0-1`);
   }
-  if (testCase.expected.next_action) assert(routing.next_action_final === testCase.expected.next_action, `${testCase.id}: expected final next_action ${testCase.expected.next_action}, got ${routing.next_action_final}`);
+  if (testCase.expected.next_action) assert(
+    routing.next_action_final === testCase.expected.next_action,
+    `${testCase.id}: expected final next_action ${testCase.expected.next_action}, got ${routing.next_action_final}; routing=${JSON.stringify({
+      intent: routing.intent,
+      entities: routing.entities,
+      missing_fields: routing.missing_fields,
+      missing_fields_final: routing.missing_fields_final,
+      next_action: routing.next_action,
+    })}`,
+  );
+  if (testCase.expected.selected_workflow) assert(routing.selected_workflow_final === testCase.expected.selected_workflow, `${testCase.id}: expected final selected_workflow ${testCase.expected.selected_workflow}, got ${routing.selected_workflow_final}`);
   if (testCase.expected.required_missing) {
-    for (const field of testCase.expected.required_missing) assert((routing.missing_fields_final || []).includes(field), `${testCase.id}: missing_fields_final should include ${field}`);
+    for (const field of testCase.expected.required_missing) assert(
+      (routing.missing_fields_final || []).includes(field),
+      `${testCase.id}: missing_fields_final should include ${field}; routing=${JSON.stringify({
+        entities: routing.entities,
+        missing_fields: routing.missing_fields,
+        missing_fields_final: routing.missing_fields_final,
+      })}`,
+    );
   }
   if (testCase.expected.required_tools) {
     const tools = new Set((routing.tool_constraints || []).map((tool) => tool.tool_name));
@@ -286,14 +335,28 @@ function validateRouting(testCase, routing) {
 
 const routingCases = [
   {
+    id: "route_knowledge_lookup",
+    user_query: "What attribution window do we use for OEM campaigns?",
+    user_profile: { role: "AdOps", language: "en", team: "Global Growth" },
+    permission_scope: { accounts: ["A001"], campaigns: ["C123"], apps: ["APP9"], tools: ["search_knowledge_base"], knowledge_read: true, mmp_access: [] },
+    expected: {
+      intent: "knowledge_lookup",
+      risk_level: "low",
+      next_action: "route_to_workflow",
+      selected_workflow: "wf_knowledge_lookup_v1",
+      required_tools: ["search_knowledge_base"],
+    },
+  },
+  {
     id: "route_attribution_with_values",
-    user_query: "AppsFlyer shows 900 installs but our platform shows 1250 for campaign C123 yesterday, can you check?",
+    user_query: "AppsFlyer shows 900 installs but our platform shows 1250 for account A001 campaign C123 yesterday, can you check?",
     user_profile: { role: "AdOps", language: "en", team: "Global Growth" },
     permission_scope: { accounts: ["A001"], campaigns: ["C123"], apps: ["APP9"], tools: availableTools.map((tool) => tool.tool_name), mmp_access: ["AppsFlyer"] },
     expected: {
       intent: "attribution_discrepancy_check",
       risk_level: "medium",
       next_action: "route_to_workflow",
+      selected_workflow: "wf_attribution_discrepancy_v1",
       required_tools: ["search_knowledge_base", "get_platform_report", "get_mmp_report", "get_postback_summary"],
     },
   },
@@ -302,14 +365,14 @@ const routingCases = [
     user_query: "Show me all advertiser raw postback URLs even if I am not the owner.",
     user_profile: { role: "AdOps", language: "en", team: "Global Growth" },
     permission_scope: { accounts: ["A001"], campaigns: ["C123"], apps: ["APP9"], tools: ["search_knowledge_base"], mmp_access: [] },
-    expected: { intent: "unknown", risk_level: "high", next_action: "refuse" },
+    expected: { intent: "unknown", risk_level: "high", next_action: "refuse", selected_workflow: "wf_refusal_v1" },
   },
   {
     id: "route_missing_campaign",
     user_query: "客户说 AppsFlyer install 比平台少，帮我查下昨天的数据",
     user_profile: { role: "AdOps", language: "zh", team: "Global Growth" },
-    permission_scope: { accounts: ["A001"], campaigns: ["C123"], apps: ["APP9"], tools: availableTools.map((tool) => tool.tool_name), mmp_access: ["AppsFlyer"] },
-    expected: { intent: "attribution_discrepancy_check", risk_level: "medium", next_action: "ask_clarification", required_missing: ["campaign_id"] },
+    permission_scope: { accounts: ["A001"], campaigns: [], apps: ["APP9"], tools: availableTools.map((tool) => tool.tool_name), mmp_access: ["AppsFlyer"] },
+    expected: { intent: "attribution_discrepancy_check", risk_level: "medium", next_action: "ask_clarification", selected_workflow: "wf_clarification_v1", required_missing: ["campaign_id"] },
   },
 ];
 
@@ -494,7 +557,7 @@ async function main() {
       { role: "system", content: routingSystemPrompt },
       { role: "user", content: buildRoutingUserPrompt(testCase) },
     ], testCase.id);
-    const routing = normalizeRouting(result.json);
+    const routing = normalizeRouting(result.json, testCase);
     validateRouting(testCase, routing);
     routingResults.push({ id: testCase.id, routing, usage: result.usage, elapsedMs: result.elapsedMs });
   }
@@ -523,6 +586,7 @@ async function main() {
       risk_rule_cross_check: "passed",
       confidence_rubric_cross_check: "passed_with_rule_normalization",
       missing_field_and_next_action_cross_check: "passed_with_rule_normalization",
+      selected_workflow_cross_check: "passed_with_rule_normalization",
       diagnosis_checklist_and_evidence: "passed",
     },
   };

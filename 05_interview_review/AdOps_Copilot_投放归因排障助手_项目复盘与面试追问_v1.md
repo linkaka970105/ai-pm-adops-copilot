@@ -78,7 +78,19 @@ AdOps Copilot 投放归因排障助手面向广告投放运营、AM 和技术支
 
 最终方案：规则和 SQL 负责确定性计算，RAG 负责知识和口径，工具负责实时数据，固定 workflow 负责必查流程，LLM 负责意图识别、实体抽取、证据解释和内部诊断摘要。
 
-## 4.1.1 如果被问“固定任务为什么不用 workflow”
+## 4.1.1 意图范围怎么划分
+
+面试里可以这样讲：
+
+```text
+总控不是只识别投放诊断和归因核对，还要识别纯知识查询和范围外意图。
+当前范围内有三类：投放效果异常诊断、归因数据不一致核对、纯知识查询。
+纯知识查询只走 RAG，不调用账户、MMP 或 postback 数据工具；比如 attribution window、指标口径、postback delay 概念。
+范围外包括 SDK/API 深排、素材审核、客户回复生成、预算/出价修改、合同/赔偿等。
+这些不会硬塞进当前 workflow，而是进入范围外兜底、追问或拒绝。
+```
+
+## 4.1.2 如果被问“固定任务为什么不用 workflow”
 
 可以这样答：
 
@@ -351,10 +363,11 @@ final_score =
 | 测试项 | 结果 |
 | --- | --- |
 | 模型可用性 | 先请求 `/v1/models`，确认 `gpt-5.5` 可用 |
-| 路由 case | 归因差异、越权 raw log、中文缺 campaign 三类 case 通过 |
+| 路由 case | 纯知识查询、归因差异、越权 raw log、中文缺 campaign 四类 case 通过 |
 | 诊断 case | 平台 installs=1250、MMP installs=900、postback success=92.4%、delay=6.8% 的归因诊断通过 |
 | 关键发现 | 模型自报 confidence 可能和公式复算不一致，所以线上采用规则复算值 |
 | 关键发现 | 缺字段和下一步动作也不能只信模型，workflow 需要按 intent 必填实体复算 |
+| 关键发现 | selected_workflow 也要规则复算；知识查询应进入 `wf_knowledge_lookup_v1` |
 | prompt 修正 | 补充“客户反馈问题不等于客户可见回复”的边界，避免误判 high risk |
 
 项目文件：
@@ -468,6 +481,26 @@ MVP 必须接核心报表和归因对比；postback 可以先做聚合摘要；M
 海外业务确实需要英文理解和输出，但企业主体和成本限制下，中国厂商模型需要优先评估。
 评测集会覆盖英文 query、中文 query、中英混合 query、MMP 专有名词和广告指标缩写。
 如果国内模型在某些英文复杂案例上不稳，可以把强模型作为灰度升级或离线抽检，而不是默认每次都调用最贵模型。
+```
+
+## 11.10 如果面试官问范围外意图怎么办
+
+```text
+我不会把范围外问题简单丢给大模型回答。
+总控会先判断 intent：当前支持投放诊断、归因核对和纯知识查询。
+纯知识查询进入 wf_knowledge_lookup_v1，只基于已审核知识库回答并展示引用。
+客户回复、SDK/API 深排、素材审核、预算/出价修改、合同赔偿等不在当前阶段，会进入 out-of-scope fallback、追问或拒绝。
+比如用户说“帮我回复客户”，当前阶段不生成客户可发送文本，但可以提示先生成内部诊断摘要，由 AM 人工改写确认。
+```
+
+## 11.11 如果面试官问总控 workflow 具体怎么跑
+
+```text
+总控 workflow 不是一条 prompt，而是状态机。
+第一步创建 trace 和上下文，第二步做权限和安全前置检查，第三步让 LLM 输出 intent、entities、risk_signals、confidence_components 和候选工具。
+然后 Schema Guard 校验 JSON 和枚举，规则层复算 missing_fields、risk_level、confidence、next_action 和 selected_workflow。
+最后 dispatcher 把请求分到 wf_campaign_performance_v1、wf_attribution_discrepancy_v1、wf_knowledge_lookup_v1、wf_clarification_v1、wf_refusal_v1 或 wf_out_of_scope_fallback_v1。
+这样模型输出只是候选，真正能不能执行由规则和 workflow 决定。
 ```
 
 # 12. 风险表达
