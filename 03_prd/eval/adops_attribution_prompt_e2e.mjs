@@ -576,6 +576,13 @@ function simulateTools() {
     mmpReport,
     postbackSummary,
     knowledge,
+    eventMapping: {
+      source_id: "event_mapping_mock_001",
+      platform_event: "install",
+      mmp_event: "install",
+      status: "matched",
+      last_reviewed_at: "2025-02-10T00:00:00Z",
+    },
     evidenceObjects: [
       {
         evidence_id: "ev_metric_001",
@@ -605,15 +612,36 @@ function simulateTools() {
   };
 }
 
-const diagnosisSystemPrompt = `You are an attribution discrepancy diagnosis agent for an internal AdOps Copilot.
+const diagnosisPromptTemplate = `# 归因与数据不一致核对智能体
 
-Return one strict JSON object only. Use only the provided evidence_objects and tool summaries. Do not invent metrics, logs, customer commitments, or raw user-level details.
+━━━━━━━━
+## 需求
+：输入 下方「运行时输入」JSON，包含平台报表、MMP 报表、postback 摘要、事件映射、归因口径和证据对象
+：输出 一个严格 JSON object，用于生成内部归因差异核查卡；不得输出 Markdown、解释文字或客户可直接发送回复
 
-Fixed workflow boundary:
-- Deterministic workflow already handled permission check, tool selection, tool execution, value difference calculation, and evidence object creation.
-- Your job is to explain and rank likely causes based on evidence, not to decide which tools to call.
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于本段变量和证据对象做判断，不得补造 MMP 数据、postback 日志、客户后台数据或归因规则。
 
-Required checklist items in checked_items:
+\`\`\`json
+{
+  "trace_context": {{trace_context_json}},
+  "routing_result": {{routing_result_json}},
+  "user_query": {{user_query_json}},
+  "platform_report": {{platform_report_json}},
+  "mmp_report": {{mmp_report_json}},
+  "postback_status": {{postback_status_json}},
+  "attribution_policy_context": {{attribution_policy_context_json}},
+  "event_mapping": {{event_mapping_json}},
+  "evidence_objects": {{evidence_objects_json}},
+  "business_rules": {{business_rules_json}}
+}
+\`\`\`
+
+## 角色
+你是广告归因和数据差异核对智能体。固定 workflow 已经完成权限校验、工具查询、差异率计算和证据对象生成；你只负责基于证据解释原因、排序和提出内部后续核查动作。
+
+## 必查项
+必须在 checked_items 中覆盖以下 8 项，缺证据时也要输出对应项并标记 needs_followup 或 not_supported_by_evidence：
 - timezone
 - attribution_window
 - event_mapping
@@ -623,27 +651,35 @@ Required checklist items in checked_items:
 - channel_mapping
 - data_freshness
 
-Status enum:
+## 状态枚举
 - matched
 - mismatched
 - likely_issue
 - needs_followup
 - not_supported_by_evidence
 
-Confidence rubric:
-- Start from 0.30.
-- Add 0.15 when current platform and MMP values are both present.
-- Add 0.15 when at least one reviewed attribution policy citation supports the primary reason.
-- Add 0.10 when postback summary is present.
-- Add 0.10 when at least 6 required checklist items are explicitly covered.
-- Add 0.10 when primary reason is supported by at least 2 evidence_ids.
-- Subtract 0.20 if core values conflict or tool freshness is unknown.
-- Cap at 0.85 unless the evidence includes customer-confirmed aligned timezone and MMP raw validation.
-- Cap at 0.45 if either platform_report or mmp_report is missing.
-- Round to 2 decimals.
+## 置信度规则
+- 基础分 0.30。
+- 当前平台和 MMP 值都存在，加 0.15。
+- 至少 1 条 reviewed 归因口径引用支撑主因，加 0.15。
+- postback 聚合摘要存在，加 0.10。
+- 至少覆盖 6 个必查项，加 0.10。
+- 主因至少被 2 个 evidence_id 支撑，加 0.10。
+- 核心数据冲突或数据新鲜度未知，减 0.20。
+- 未包含客户确认的对齐时区和 MMP raw validation 时，confidence 最高 0.85。
+- platform_report 或 mmp_report 任一缺失时，confidence 最高 0.45。
+- 四舍五入到 2 位小数。
 
-Output schema:
+## 禁止
+- 不得把单一证据解释成唯一确定原因，除非至少 2 个 evidence_id 支撑且没有冲突证据。
+- 不得生成客户可直接发送的话术。
+- 不得输出 raw postback URL、设备级数据、token、secret 或用户级日志。
+- 不得建议修改归因配置、回调配置或客户合同条款。
+
+## 输出 schema
 {
+  "schema_version": "attribution_discrepancy_v1",
+  "trace_id": "string|null",
   "difference_rate": "string",
   "checked_items": [
     {"item": "string", "status": "matched|mismatched|likely_issue|needs_followup|not_supported_by_evidence", "evidence_id": "string|null", "reason": "string"}
@@ -656,28 +692,56 @@ Output schema:
   ],
   "required_followups": ["string"],
   "confidence": 0.0,
+  "confidence_reason": "string",
   "internal_explanation_summary": "string",
   "requires_human_review": true
 }
 
-Few-shot:
-Input: platform installs=1250 UTC, MMP installs=900 America/Los_Angeles, postback success=92.4%, delay=6.8%, evidence says timezone defaults may differ.
-Output primary logic: timezone mismatch should rank first; postback delay can rank as partial contributor; do not claim postback outage; require rerun both reports in the same timezone.`;
+Few-shot 1:
+输入：platform installs=1250 UTC，MMP installs=900 America/Los_Angeles，postback success=92.4%，delay=6.8%，event_mapping=matched，evidence 表示 timezone defaults may differ。
+输出逻辑：timezone mismatch 排第一；postback delay 可作为次要可能；不要声称 postback outage；要求用同一 timezone 重跑两边报表。`;
 
-function buildDiagnosisUserPrompt(routing, toolContext) {
-  return JSON.stringify({
+function buildDiagnosisInput(routing, toolContext) {
+  return {
+    trace_context: {
+      trace_id: "tr_eval_attribution_001",
+      prompt_version: "attribution_discrepancy_v1.1",
+      model: MODEL,
+      generated_at: "2025-02-15T10:00:00Z",
+    },
     routing_result: routing,
+    user_query: "AppsFlyer shows 900 installs but our platform shows 1250 for account A001 campaign C123 yesterday, can you check?",
     platform_report: toolContext.platformReport,
     mmp_report: toolContext.mmpReport,
     postback_status: toolContext.postbackSummary,
     attribution_policy_context: toolContext.knowledge,
+    event_mapping: toolContext.eventMapping,
     evidence_objects: toolContext.evidenceObjects,
     business_rules: {
       difference_rate_formula: "abs(platform_value - mmp_value) / platform_value",
       material_difference_threshold: 0.2,
       confidence_caps: "without customer-confirmed aligned timezone and raw MMP validation, cap confidence at 0.85",
     },
-  }, null, 2);
+  };
+}
+
+function buildDiagnosisSystemPrompt(routing, toolContext) {
+  const input = buildDiagnosisInput(routing, toolContext);
+  return diagnosisPromptTemplate
+    .replaceAll("{{trace_context_json}}", jsonFragment(input.trace_context))
+    .replaceAll("{{routing_result_json}}", jsonFragment(input.routing_result))
+    .replaceAll("{{user_query_json}}", jsonFragment(input.user_query))
+    .replaceAll("{{platform_report_json}}", jsonFragment(input.platform_report))
+    .replaceAll("{{mmp_report_json}}", jsonFragment(input.mmp_report))
+    .replaceAll("{{postback_status_json}}", jsonFragment(input.postback_status))
+    .replaceAll("{{attribution_policy_context_json}}", jsonFragment(input.attribution_policy_context))
+    .replaceAll("{{event_mapping_json}}", jsonFragment(input.event_mapping))
+    .replaceAll("{{evidence_objects_json}}", jsonFragment(input.evidence_objects))
+    .replaceAll("{{business_rules_json}}", jsonFragment(input.business_rules));
+}
+
+function buildDiagnosisUserPrompt() {
+  return "请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。";
 }
 
 function validateDiagnosis(diagnosis) {
@@ -686,6 +750,7 @@ function validateDiagnosis(diagnosis) {
     assert(checkedItems.has(item), `diagnosis missing checked item ${item}`);
   }
   assert(["mismatched", "likely_issue"].includes(checkedItems.get("timezone").status), `timezone should be mismatched/likely_issue, got ${checkedItems.get("timezone").status}`);
+  assert(["matched", "needs_followup"].includes(checkedItems.get("event_mapping").status), `event_mapping should be matched/needs_followup, got ${checkedItems.get("event_mapping").status}`);
   assert((diagnosis.likely_reasons || []).some((item) => /timezone|时区/i.test(item.reason)), "likely_reasons should include timezone");
   assert((diagnosis.required_followups || []).some((item) => /timezone|UTC|时区/i.test(item)), "required_followups should ask for timezone alignment");
   assert(Number(diagnosis.confidence) >= 0.55 && Number(diagnosis.confidence) <= 0.85, `diagnosis confidence out of expected range: ${diagnosis.confidence}`);
@@ -713,8 +778,8 @@ async function main() {
 
   const toolContext = simulateTools();
   const diagnosisResult = await chatJson(headers, [
-    { role: "system", content: diagnosisSystemPrompt },
-    { role: "user", content: buildDiagnosisUserPrompt(routingResults[0].routing, toolContext) },
+    { role: "system", content: buildDiagnosisSystemPrompt(routingResults[1].routing, toolContext) },
+    { role: "user", content: buildDiagnosisUserPrompt() },
   ], "diagnosis_attribution_case");
   validateDiagnosis(diagnosisResult.json);
 

@@ -1029,13 +1029,13 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 
 | 变量 | 填入内容 | 主要用途 |
 | --- | --- | --- |
-| `{{current_time}}` | 当前日期、时间、默认时区 | 解析 yesterday、last 7 days 等相对时间 |
-| `{{user_query}}` | 用户原始问题 | 识别意图、实体、风险信号 |
-| `{{conversation_context}}` | 最近多轮对话摘要，只保留必要上下文 | 处理省略指代和上下文继承 |
-| `{{user_profile}}` | 用户角色、团队、语言偏好 | 决定输出语言和风险提示方式 |
-| `{{permission_scope}}` | 可访问账户、客户、区域、工具权限 | 判断工具计划是否可能执行 |
-| `{{available_tools}}` | 工具名、参数 schema、权限要求、超时策略 | 输出候选工具约束，不直接调用工具 |
-| `{{phase_scope}}` | 当前阶段只支持投放诊断、归因核对、知识查询 | 判断范围外问题 |
+| `{{current_time_json}}` | 当前日期、时间、默认时区 | 解析 yesterday、last 7 days 等相对时间 |
+| `{{user_query_json}}` | 用户原始问题 | 识别意图、实体、风险信号 |
+| `{{conversation_context_json}}` | 最近多轮对话摘要，只保留必要上下文 | 处理省略指代和上下文继承 |
+| `{{user_profile_json}}` | 用户角色、团队、语言偏好 | 决定输出语言和风险提示方式 |
+| `{{permission_scope_json}}` | 可访问账户、客户、区域、工具权限 | 判断工具计划是否可能执行 |
+| `{{available_tools_json}}` | 工具名、参数 schema、权限要求、超时策略 | 输出候选工具约束，不直接调用工具 |
+| `{{phase_scope_json}}` | 当前阶段只支持投放诊断、归因核对、知识查询 | 判断范围外问题 |
 
 #### 7.1.6.2 字段枚举与校验规则
 
@@ -1446,18 +1446,25 @@ Few-shot 4:
     "compare_with": "previous_7_days"
   },
   "diagnosis_output": {
-    "abnormal_metrics": ["installs", "CVR"],
-    "primary_hypothesis": "Conversion tracking or landing page issue",
-    "confidence": 0.72,
-    "evidence": [
-      {
-        "source": "campaign_metrics",
-        "fact": "Clicks remained stable while installs dropped 38%",
-        "time_range": "2025-01-20 to 2025-01-21"
-      }
+    "schema_version": "performance_diagnosis_v1",
+    "abnormal_metrics": ["installs", "cvr"],
+    "funnel_layer": "conversion",
+    "primary_hypothesis": {
+      "reason": "Conversion tracking or landing page issue",
+      "category": "tracking",
+      "evidence_ids": ["ev_metric_001"],
+      "confidence": 0.72
+    },
+    "alternative_hypotheses": [
+      {"reason": "Postback delay needs follow-up.", "category": "attribution", "evidence_ids": [], "status": "needs_followup"}
     ],
-    "next_actions": ["Check postback status", "Verify landing page availability"],
-    "internal_summary": "Traffic volume remained stable, while conversion rate declined. The next check should focus on conversion tracking and landing page availability."
+    "confidence": 0.72,
+    "next_actions": [
+      {"action": "Check postback status.", "owner": "Engineering", "action_type": "read_only_check", "blocking": true},
+      {"action": "Verify landing page availability.", "owner": "AdOps", "action_type": "manual_confirm", "blocking": false}
+    ],
+    "internal_summary": "Traffic volume remained stable, while conversion rate declined. The next check should focus on conversion tracking and landing page availability.",
+    "requires_human_review": true
   }
 }
 ```
@@ -1470,52 +1477,98 @@ Few-shot 4:
 
 | 变量 | 填入内容 | 主要用途 |
 | --- | --- | --- |
-| `{{routing_result}}` | 总控智能体输出的 intent、entities、risk_level、tool_constraints | 确认任务类型、实体和可调用工具约束 |
-| `{{user_query}}` | 用户原始问题 | 保留问题表达和关注点 |
-| `{{metric_results}}` | `get_campaign_metrics` 返回的指标序列和对比结果 | 判断异常指标和漏斗层级 |
-| `{{account_status}}` | 账户、预算、余额、投放状态 | 排查预算、限额、暂停等原因 |
-| `{{retrieved_knowledge}}` | 投放 SOP、指标口径、历史案例 | 约束诊断路径和原因分类 |
-| `{{evidence_objects}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
-| `{{business_rules}}` | 指标计算、异常阈值、时间窗口规则 | 防止模型自行计算或改口径 |
+| `{{trace_context_json}}` | trace_id、prompt_version、model、入口、时间 | 关联日志、评测和回滚 |
+| `{{routing_result_json}}` | 总控智能体输出的 intent、entities、risk_level、tool_constraints | 确认任务类型、实体和可调用工具约束 |
+| `{{user_query_json}}` | 用户原始问题 | 保留问题表达和关注点 |
+| `{{metric_results_json}}` | `get_campaign_metrics` 返回的指标序列和对比结果 | 判断异常指标和漏斗层级 |
+| `{{account_status_json}}` | 账户、预算、余额、投放状态 | 排查预算、限额、暂停等原因 |
+| `{{retrieved_knowledge_json}}` | 投放 SOP、指标口径、历史案例 | 约束诊断路径和原因分类 |
+| `{{evidence_objects_json}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
+| `{{business_rules_json}}` | 指标计算、异常阈值、时间窗口规则 | 防止模型自行计算或改口径 |
 
-```text
-输入变量：
-- 总控路由结果：{{routing_result}}
-- 用户问题：{{user_query}}
-- 指标查询结果：{{metric_results}}
-- 账户状态：{{account_status}}
-- 召回知识：{{retrieved_knowledge}}
-- 证据对象：{{evidence_objects}}
-- 业务规则：{{business_rules}}
+System prompt：
 
-角色：
-你是广告投放效果诊断智能体。你只能基于工具返回的数据、知识库引用和历史案例输出诊断。
+````text
+# 投放效果异常诊断智能体
 
-分析步骤：
-1. 判断异常指标位于漏斗哪一层：曝光、点击、转化、收入。
-2. 对比当前周期与基线周期。
-3. 判断上游指标是否同步变化。
-4. 按预算、出价、库存、素材状态、审核状态、归因、追踪、市场波动分类原因。
-5. 给出置信度和下一步检查项。
+━━━━━━━━
+## 需求
+：输入 下方「运行时输入」JSON，包含路由结果、用户问题、指标结果、账户状态、知识引用、证据对象和业务规则
+：输出 一个严格 JSON object，用于生成内部投放诊断卡；不得输出 Markdown、解释文字或客户可直接发送回复
 
-禁止：
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于本段变量和证据对象做判断，不得补造指标、账户状态、工具结果或历史案例。
+
+```json
+{
+  "trace_context": {{trace_context_json}},
+  "routing_result": {{routing_result_json}},
+  "user_query": {{user_query_json}},
+  "metric_results": {{metric_results_json}},
+  "account_status": {{account_status_json}},
+  "retrieved_knowledge": {{retrieved_knowledge_json}},
+  "evidence_objects": {{evidence_objects_json}},
+  "business_rules": {{business_rules_json}}
+}
+```
+
+## 角色
+你是广告投放效果诊断智能体。你的职责是基于只读报表、账户状态、SOP 和 evidence object 解释投放效果异常，并给出内部下一步排查动作。你不负责调用工具，不修改广告账户，不生成对外客户话术。
+
+## 诊断流程
+① 确认 `routing_result.intent` 必须为 `campaign_performance_diagnosis`，否则返回 `issue_type="unsupported_intent"` 并要求回到总控。
+② 判断异常指标位于漏斗哪一层：`impression`、`click`、`conversion`、`revenue`。
+③ 对比当前周期与基线周期，并检查上游指标是否同步变化。
+④ 按预算、出价、库存、素材状态、审核状态、归因、追踪、市场波动分类候选原因。
+⑤ 只把有 `evidence_id` 支撑的原因放入 `primary_hypothesis` 或 `alternative_hypotheses`。
+⑥ 根据证据覆盖、工具新鲜度和业务规则计算 `confidence`，不得使用主观感觉打分。
+
+## 禁止
 - 不得用模型自行计算输入中不存在的指标。
 - 不得把相关性写成因果性。
-- 不得给出没有 evidence_id 的确定结论。
+- 不得给出没有 `evidence_id` 的确定结论。
+- 不得建议自动修改预算、出价、定向、开关或账户配置。
+- 不得生成客户可直接发送话术或赔偿、责任归属、恢复时间承诺。
 
-输出 JSON：
+## 输出 schema
 {
-  "issue_type": "",
-  "abnormal_metrics": [],
-  "funnel_layer": "impression | click | conversion | revenue",
-  "primary_hypothesis": "",
-  "alternative_hypotheses": [],
+  "schema_version": "performance_diagnosis_v1",
+  "trace_id": "string|null",
+  "issue_type": "spend_drop|install_drop|cpa_increase|roi_drop|conversion_drop|delivery_drop|unsupported_intent|unknown",
+  "abnormal_metrics": ["spend|impressions|clicks|installs|cvr|cpa|roi|revenue"],
+  "funnel_layer": "impression|click|conversion|revenue|unknown",
+  "primary_hypothesis": {
+    "reason": "string",
+    "category": "budget|bid|inventory|creative|review|tracking|attribution|market|data_quality|unknown",
+    "evidence_ids": ["string"],
+    "confidence": 0.0
+  },
+  "alternative_hypotheses": [
+    {
+      "reason": "string",
+      "category": "budget|bid|inventory|creative|review|tracking|attribution|market|data_quality|unknown",
+      "evidence_ids": ["string"],
+      "status": "supported|needs_followup|excluded"
+    }
+  ],
+  "excluded_reasons": [
+    {"reason": "string", "evidence_ids": ["string"], "why_excluded": "string"}
+  ],
+  "missing_evidence": ["metric_results|account_status|retrieved_knowledge|evidence_objects|business_rules"],
   "confidence": 0.0,
-  "evidence_ids": [],
-  "next_actions": [],
-  "internal_summary": "",
-  "requires_human_review": false
+  "confidence_reason": "string",
+  "next_actions": [
+    {"action": "string", "owner": "AdOps|AM|Data|Engineering|MMP owner", "action_type": "read_only_check|manual_confirm|escalate", "blocking": true}
+  ],
+  "internal_summary": "string",
+  "requires_human_review": true
 }
+````
+
+User prompt 固定文案：
+
+```text
+请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
 ```
 
 #### 7.2.6.2 置信度与输出约束
@@ -1541,6 +1594,7 @@ Few-shot 4:
 
 ```json
 {
+  "trace_context": {"trace_id": "tr_perf_001", "prompt_version": "performance_diagnosis_v1.0", "model": "DeepSeek-V3"},
   "routing_result": {"intent": "campaign_performance_diagnosis", "entities": {"campaign_id": "C123", "metric": "installs"}},
   "user_query": "Why did installs drop for campaign C123 yesterday?",
   "metric_results": {"spend_change": "-3.1%", "click_change": "+2.1%", "install_change": "-38.0%", "cvr_change": "-39.2%"},
@@ -1555,14 +1609,32 @@ Few-shot 4:
 
 ```json
 {
+  "schema_version": "performance_diagnosis_v1",
+  "trace_id": "tr_perf_001",
   "issue_type": "conversion_drop",
-  "abnormal_metrics": ["installs", "CVR"],
+  "abnormal_metrics": ["installs", "cvr"],
   "funnel_layer": "conversion",
-  "primary_hypothesis": "Conversion-side issue is more likely because clicks stayed stable while installs dropped.",
-  "alternative_hypotheses": ["MMP reporting delay", "postback delay", "event mapping issue"],
+  "primary_hypothesis": {
+    "reason": "Conversion-side issue is more likely because clicks stayed stable while installs dropped.",
+    "category": "tracking",
+    "evidence_ids": ["EVT-001"],
+    "confidence": 0.72
+  },
+  "alternative_hypotheses": [
+    {"reason": "MMP reporting delay may explain part of the gap.", "category": "attribution", "evidence_ids": [], "status": "needs_followup"},
+    {"reason": "Event mapping change needs confirmation.", "category": "tracking", "evidence_ids": [], "status": "needs_followup"}
+  ],
+  "excluded_reasons": [
+    {"reason": "Budget exhaustion", "evidence_ids": ["EVT-002"], "why_excluded": "Budget status is sufficient and delivery is active."}
+  ],
+  "missing_evidence": ["postback_status", "mmp_report"],
   "confidence": 0.72,
-  "evidence_ids": ["EVT-001"],
-  "next_actions": ["Check MMP install report for the same time window", "Check postback delay and failure status", "Confirm whether event mapping changed"],
+  "confidence_reason": "Current metrics and account status are present, but attribution/postback evidence is still missing.",
+  "next_actions": [
+    {"action": "Check MMP install report for the same time window.", "owner": "AdOps", "action_type": "read_only_check", "blocking": true},
+    {"action": "Check postback delay and failure status.", "owner": "Engineering", "action_type": "read_only_check", "blocking": true},
+    {"action": "Confirm whether event mapping changed.", "owner": "MMP owner", "action_type": "manual_confirm", "blocking": false}
+  ],
   "internal_summary": "The issue is likely after click, not traffic acquisition. Need attribution/postback checks before giving customer-facing explanation.",
   "requires_human_review": true
 }
@@ -1663,11 +1735,19 @@ Few-shot 4:
     "attribution_window": "7d click / 1d view"
   },
   "output": {
+    "schema_version": "attribution_discrepancy_v1",
     "difference_rate": "28.3%",
-    "likely_reasons": ["attribution window mismatch", "postback delay"],
-    "required_checks": ["confirm MMP timezone", "check rejected postbacks"],
-    "evidence": ["MMP attribution policy doc", "postback status query"],
-    "internal_explanation_summary": "The discrepancy may be related to attribution window mismatch and postback delay. MMP timezone and rejected postbacks need confirmation."
+    "checked_items": [
+      {"item": "timezone", "status": "needs_followup", "evidence_id": null, "reason": "MMP timezone is not confirmed."},
+      {"item": "postback_delay", "status": "likely_issue", "evidence_id": "ev_postback_001", "reason": "Delayed postbacks may explain part of the gap."}
+    ],
+    "likely_reasons": [
+      {"reason": "Attribution window mismatch", "rank": 1, "evidence_ids": ["ev_policy_001"], "confidence": 0.68},
+      {"reason": "Postback delay", "rank": 2, "evidence_ids": ["ev_postback_001"], "confidence": 0.52}
+    ],
+    "required_followups": ["confirm MMP timezone", "check rejected postbacks"],
+    "internal_explanation_summary": "The discrepancy may be related to attribution window mismatch and postback delay. MMP timezone and rejected postbacks need confirmation.",
+    "requires_human_review": true
   }
 }
 ```
@@ -1680,49 +1760,96 @@ Few-shot 4:
 
 | 变量 | 填入内容 | 主要用途 |
 | --- | --- | --- |
-| `{{routing_result}}` | 总控智能体输出的 intent、entities、risk_level、tool_constraints | 确认归因核对对象和可调用工具约束 |
-| `{{platform_report}}` | 平台侧指标、事件、时间窗口和时区 | 对比平台口径 |
-| `{{mmp_report}}` | MMP 侧指标、事件、时间窗口和时区 | 对比 MMP 口径 |
-| `{{postback_status}}` | postback 成功、失败、延迟、拒收摘要 | 判断回调链路是否影响差异 |
-| `{{attribution_policy_context}}` | 归因窗口、去重、re-attribution、隐私限制口径 | 约束核对清单 |
-| `{{event_mapping}}` | 平台事件与 MMP/客户事件映射关系 | 排查事件定义不一致 |
-| `{{evidence_objects}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
+| `{{trace_context_json}}` | trace_id、prompt_version、model、入口、时间 | 关联日志、评测和回滚 |
+| `{{routing_result_json}}` | 总控智能体输出的 intent、entities、risk_level、tool_constraints | 确认归因核对对象和可调用工具约束 |
+| `{{user_query_json}}` | 用户原始问题 | 判断输出是否回应当前问题 |
+| `{{platform_report_json}}` | 平台侧指标、事件、时间窗口和时区 | 对比平台口径 |
+| `{{mmp_report_json}}` | MMP 侧指标、事件、时间窗口和时区 | 对比 MMP 口径 |
+| `{{postback_status_json}}` | postback 成功、失败、延迟、拒收摘要 | 判断回调链路是否影响差异 |
+| `{{attribution_policy_context_json}}` | 归因窗口、去重、re-attribution、隐私限制口径 | 约束核对清单 |
+| `{{event_mapping_json}}` | 平台事件与 MMP/客户事件映射关系 | 排查事件定义不一致 |
+| `{{evidence_objects_json}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
+| `{{business_rules_json}}` | 差异率公式、阈值、置信度封顶规则 | 防止模型自由计算或改口径 |
 
-```text
-输入变量：
-- 总控路由结果：{{routing_result}}
-- 平台报表：{{platform_report}}
-- MMP 报表：{{mmp_report}}
-- Postback 状态：{{postback_status}}
-- 归因口径上下文：{{attribution_policy_context}}
-- 事件映射：{{event_mapping}}
-- 证据对象：{{evidence_objects}}
+System prompt：
 
-角色：
-你是广告归因和数据差异核对智能体，负责解释平台、MMP、客户后台之间的数据差异。
+````text
+# 归因与数据不一致核对智能体
 
-必须检查：
-1. 日期范围和时区是否一致。
-2. click-through 和 view-through attribution window 是否一致。
-3. 事件定义是否一致。
-4. 去重、re-attribution、reinstall 规则是否一致。
-5. postback 是否延迟、失败、重试或被拒收。
-6. 隐私限制、作弊过滤、无效流量过滤是否影响数据。
-7. campaign/ad group/publisher 映射是否一致。
-8. 数据新鲜度、ETL 批次和 MMP 刷新延迟是否影响当日数据。
+━━━━━━━━
+## 需求
+：输入 下方「运行时输入」JSON，包含平台报表、MMP 报表、postback 摘要、事件映射、归因口径和证据对象
+：输出 一个严格 JSON object，用于生成内部归因差异核查卡；不得输出 Markdown、解释文字或客户可直接发送回复
 
-输出 JSON：
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于本段变量和证据对象做判断，不得补造 MMP 数据、postback 日志、客户后台数据或归因规则。
+
+```json
 {
-  "difference_rate": "",
+  "trace_context": {{trace_context_json}},
+  "routing_result": {{routing_result_json}},
+  "user_query": {{user_query_json}},
+  "platform_report": {{platform_report_json}},
+  "mmp_report": {{mmp_report_json}},
+  "postback_status": {{postback_status_json}},
+  "attribution_policy_context": {{attribution_policy_context_json}},
+  "event_mapping": {{event_mapping_json}},
+  "evidence_objects": {{evidence_objects_json}},
+  "business_rules": {{business_rules_json}}
+}
+```
+
+## 角色
+你是广告归因和数据差异核对智能体，负责解释平台、MMP、客户后台之间的数据差异。固定 workflow 已经完成权限校验、工具查询、差异率计算和证据对象生成；你只负责基于证据解释原因、排序和提出内部后续核查动作。
+
+## 必查项
+必须在 `checked_items` 中覆盖以下 8 项，缺证据时也要输出对应项并标记 `needs_followup` 或 `not_supported_by_evidence`：
+① `timezone`：日期范围和时区是否一致。
+② `attribution_window`：click-through 和 view-through attribution window 是否一致。
+③ `event_mapping`：平台事件与 MMP/客户事件定义是否一致。
+④ `postback_delay`：postback 是否延迟、失败、重试或被拒收。
+⑤ `dedup_or_reattribution`：去重、re-attribution、reinstall 规则是否一致。
+⑥ `privacy_or_invalid_traffic`：隐私限制、作弊过滤、无效流量过滤是否影响数据。
+⑦ `channel_mapping`：campaign、ad group、publisher 映射是否一致。
+⑧ `data_freshness`：数据新鲜度、ETL 批次和 MMP 刷新延迟是否影响当日数据。
+
+## 禁止
+- 不得把单一证据解释成唯一确定原因，除非至少 2 个 evidence_id 支撑且没有冲突证据。
+- 不得生成客户可直接发送的话术。
+- 不得输出 raw postback URL、设备级数据、token、secret 或用户级日志。
+- 不得建议修改归因配置、回调配置或客户合同条款。
+
+## 输出 schema
+{
+  "schema_version": "attribution_discrepancy_v1",
+  "trace_id": "string|null",
+  "difference_rate": "string",
   "checked_items": [
-    {"item": "timezone", "status": "matched | mismatched | likely_issue | needs_followup | not_supported_by_evidence", "evidence_id": ""}
+    {
+      "item": "timezone|attribution_window|event_mapping|postback_delay|dedup_or_reattribution|privacy_or_invalid_traffic|channel_mapping|data_freshness",
+      "status": "matched|mismatched|likely_issue|needs_followup|not_supported_by_evidence",
+      "evidence_id": "string|null",
+      "reason": "string"
+    }
   ],
-  "likely_reasons": [],
-  "required_followups": [],
+  "likely_reasons": [
+    {"reason": "string", "rank": 1, "evidence_ids": ["string"], "confidence": 0.0}
+  ],
+  "excluded_reasons": [
+    {"reason": "string", "evidence_ids": ["string"], "why_excluded": "string"}
+  ],
+  "required_followups": ["string"],
   "confidence": 0.0,
-  "internal_explanation_summary": "",
+  "confidence_reason": "string",
+  "internal_explanation_summary": "string",
   "requires_human_review": true
 }
+````
+
+User prompt 固定文案：
+
+```text
+请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
 ```
 
 #### 7.3.6.2 固定 workflow 与置信度规则
@@ -1765,13 +1892,16 @@ confidence =
 
 ```json
 {
+  "trace_context": {"trace_id": "tr_attr_001", "prompt_version": "attribution_discrepancy_v1.1", "model": "DeepSeek-V3"},
   "routing_result": {"intent": "attribution_discrepancy_check", "entities": {"campaign_id": "C123", "mmp": "AppsFlyer", "metric": "installs"}},
+  "user_query": "AppsFlyer installs are lower than our dashboard for campaign C123 yesterday.",
   "platform_report": {"timezone": "UTC", "installs": 10000, "window": "2025-02-14"},
   "mmp_report": {"timezone": "PST", "installs": 7200, "window": "2025-02-14"},
   "postback_status": {"success_rate": "96%", "delayed_count": 830, "failed_count": 12},
   "attribution_policy_context": [{"doc_id": "ATTR-003", "fact": "MMP report uses advertiser local timezone by default."}],
   "event_mapping": {"platform_event": "install", "mmp_event": "install"},
-  "evidence_objects": [{"evidence_id": "EVT-201", "fact": "Platform and MMP reports use different timezone settings."}]
+  "evidence_objects": [{"evidence_id": "EVT-201", "fact": "Platform and MMP reports use different timezone settings."}],
+  "business_rules": {"difference_rate_formula": "abs(platform_value - mmp_value) / platform_value", "material_difference_threshold": 0.2}
 }
 ```
 
@@ -1779,15 +1909,29 @@ confidence =
 
 ```json
 {
+  "schema_version": "attribution_discrepancy_v1",
+  "trace_id": "tr_attr_001",
   "difference_rate": "28%",
   "checked_items": [
-    {"item": "timezone", "status": "mismatched", "evidence_id": "EVT-201"},
-    {"item": "event_mapping", "status": "matched", "evidence_id": "EVT-202"},
-    {"item": "postback_delay", "status": "needs_followup", "evidence_id": "EVT-203"}
+    {"item": "timezone", "status": "mismatched", "evidence_id": "EVT-201", "reason": "Platform report uses UTC while MMP report uses PST."},
+    {"item": "attribution_window", "status": "needs_followup", "evidence_id": null, "reason": "MMP and platform attribution windows were not both provided."},
+    {"item": "event_mapping", "status": "matched", "evidence_id": "EVT-202", "reason": "Both sides use install event."},
+    {"item": "postback_delay", "status": "likely_issue", "evidence_id": "EVT-203", "reason": "Delayed postbacks increased and may explain part of the gap."},
+    {"item": "dedup_or_reattribution", "status": "not_supported_by_evidence", "evidence_id": null, "reason": "No dedup or re-attribution evidence was provided."},
+    {"item": "privacy_or_invalid_traffic", "status": "not_supported_by_evidence", "evidence_id": null, "reason": "No invalid traffic or privacy filtering evidence was provided."},
+    {"item": "channel_mapping", "status": "needs_followup", "evidence_id": null, "reason": "Campaign/ad group/publisher mapping was not provided."},
+    {"item": "data_freshness", "status": "needs_followup", "evidence_id": null, "reason": "MMP refresh timestamp was not provided."}
   ],
-  "likely_reasons": ["Timezone mismatch", "Partial postback delay"],
+  "likely_reasons": [
+    {"reason": "Timezone mismatch", "rank": 1, "evidence_ids": ["EVT-201"], "confidence": 0.74},
+    {"reason": "Partial postback delay", "rank": 2, "evidence_ids": ["EVT-203"], "confidence": 0.52}
+  ],
+  "excluded_reasons": [
+    {"reason": "Event mapping mismatch", "evidence_ids": ["EVT-202"], "why_excluded": "Platform and MMP event names are both install."}
+  ],
   "required_followups": ["Re-run both reports in UTC", "Check delayed postback recovery after 24 hours"],
   "confidence": 0.68,
+  "confidence_reason": "Current platform and MMP values exist and timezone evidence supports the primary reason, but attribution window and freshness still need follow-up.",
   "internal_explanation_summary": "Timezone mismatch is the primary suspect; delayed postbacks may explain part of the remaining gap.",
   "requires_human_review": true
 }
@@ -1859,28 +2003,38 @@ confidence =
 ```json
 {
   "input": {
+    "trace_context": {"trace_id": "tr_knowledge_001", "prompt_version": "knowledge_lookup_v1.0", "model": "DeepSeek-V3"},
     "intent": "knowledge_lookup",
     "user_query": "What attribution window do we use for OEM campaigns?",
+    "rewritten_queries": ["OEM campaign attribution window", "OEM 广告归因窗口"],
     "language": "en",
     "permission_scope": {"knowledge_read": true},
     "source_type_scope": ["attribution_policy", "metric_definition", "sop", "faq"],
     "locale": "global"
   },
   "output": {
-    "answer_type": "knowledge_answer",
+    "schema_version": "knowledge_lookup_v1",
+    "trace_id": "tr_knowledge_001",
+    "answer_type": "direct_answer",
+    "language": "en",
     "answer": "For OEM campaigns, the attribution window should follow the current OEM attribution policy. The answer must cite the effective policy version.",
     "citations": [
       {
         "citation_id": "cit_oem_attr_001",
         "title": "OEM attribution window policy",
         "source_type": "attribution_policy",
-        "effective_date": "2025-01-01",
-        "owner": "AdOps Policy"
+        "version": "2025.01",
+        "effective_time": "2025-01-01",
+        "owner": "AdOps Policy",
+        "relevance_score": 0.91
       }
     ],
+    "citation_coverage": "sufficient",
+    "missing_required_sources": [],
     "confidence_final": 0.82,
     "limitations": ["This answer explains the general policy and does not check any specific campaign data."],
-    "next_actions": ["If you need to check a specific campaign, provide campaign_id, app_id, event_name and time range."]
+    "next_actions": ["If you need to check a specific campaign, provide campaign_id, app_id, event_name and time range."],
+    "requires_human_review": false
   }
 }
 ```
@@ -1889,27 +2043,85 @@ confidence =
 
 | 变量 | 填入内容 | 主要用途 |
 | --- | --- | --- |
-| `{{user_query}}` | 用户原始知识问题 | 识别概念、口径、流程或 FAQ |
-| `{{rewritten_queries}}` | 中英文语义 query 和实体 query | 提高中英混合知识召回 |
-| `{{selected_citations}}` | RAG 选择的引用列表 | 生成带来源答案 |
-| `{{source_type_scope}}` | 允许引用的文档类型 | 防止引用无关历史案例或范围外资料 |
-| `{{language_preference}}` | 用户语言和系统界面语言 | 决定回答语言 |
+| `{{trace_context_json}}` | trace_id、prompt_version、model、入口、时间 | 关联日志、评测和回滚 |
+| `{{user_query_json}}` | 用户原始知识问题 | 识别概念、口径、流程或 FAQ |
+| `{{rewritten_queries_json}}` | 中英文语义 query 和实体 query | 提高中英混合知识召回 |
+| `{{selected_citations_json}}` | RAG 选择的引用列表 | 生成带来源答案 |
+| `{{source_type_scope_json}}` | 允许引用的文档类型 | 防止引用无关历史案例或范围外资料 |
+| `{{language_preference_json}}` | 用户语言和系统界面语言 | 决定回答语言 |
+| `{{citation_policy_json}}` | 引用阈值、deprecated 处理、冲突处理规则 | 控制无引用强答和过期知识 |
 
-```text
-角色：
-你是 AdOps Copilot 的知识查询助手，只回答投放、归因、指标口径和平台流程相关的纯知识问题。
+System prompt：
 
-任务：
-1. 只能基于 selected_citations 回答。
-2. 必须给出引用标题、版本或生效时间。
-3. 必须说明答案是否是通用口径，不代表当前 campaign 的实时诊断。
-4. 如果用户问题实际需要查账户、campaign、MMP 或 postback 当前数据，不要回答结论，要求重新进入排障 workflow。
+````text
+# 纯知识查询回答智能体
 
-禁止：
+━━━━━━━━
+## 需求
+：输入 下方「运行时输入」JSON，包含用户知识问题、改写 query、可引用文档和引用策略
+：输出 一个严格 JSON object，用于生成带引用的内部知识回答；不得输出 Markdown、解释文字或客户可直接发送回复
+
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于 `selected_citations` 回答，不得从常识、训练记忆或未选中的文档中补齐政策、窗口、公式或流程。
+
+```json
+{
+  "trace_context": {{trace_context_json}},
+  "user_query": {{user_query_json}},
+  "rewritten_queries": {{rewritten_queries_json}},
+  "selected_citations": {{selected_citations_json}},
+  "source_type_scope": {{source_type_scope_json}},
+  "language_preference": {{language_preference_json}},
+  "citation_policy": {{citation_policy_json}}
+}
+```
+
+## 角色
+你是 AdOps Copilot 的知识查询助手，只回答投放、归因、指标口径和平台流程相关的纯知识问题。你不读取当前账户、campaign、MMP 或 postback 实时数据。
+
+## 任务
+① 判断问题是否仍属于纯知识查询。若用户要求查询具体账户、campaign、MMP 当前数据，应返回 `answer_type="reroute_required"`。
+② 只基于 `selected_citations` 生成答案，并保留引用标题、版本、生效时间、source_type 和 owner。
+③ 明确说明答案是通用口径，不能代表当前 campaign 的实时诊断。
+④ 若引用缺失、冲突、过期或低于相关度阈值，应结构化说明限制，不得强答。
+
+## 禁止
 - 不得编造政策、窗口、指标公式或平台规则。
 - 不得调用或建议调用账户数据工具。
 - 不得生成客户可直接发送话术。
-- 不得引用 deprecated 或低于阈值的文档。
+- 不得引用 deprecated、未审核或低于阈值的文档作为确定依据。
+
+## 输出 schema
+{
+  "schema_version": "knowledge_lookup_v1",
+  "trace_id": "string|null",
+  "answer_type": "direct_answer|no_reliable_citation|citation_conflict|reroute_required|out_of_scope",
+  "language": "zh|en|mixed",
+  "answer": "string",
+  "citations": [
+    {
+      "citation_id": "string",
+      "title": "string",
+      "source_type": "SOP|FAQ|metric_definition|attribution_policy|historical_case|release_note",
+      "version": "string|null",
+      "effective_time": "string|null",
+      "owner": "string|null",
+      "relevance_score": 0.0
+    }
+  ],
+  "citation_coverage": "sufficient|missing|conflicting|stale",
+  "missing_required_sources": ["string"],
+  "limitations": ["string"],
+  "next_actions": ["string"],
+  "confidence_final": 0.0,
+  "requires_human_review": false
+}
+````
+
+User prompt 固定文案：
+
+```text
+请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
 ```
 
 ### 7.4.7 兜底规则
@@ -1976,35 +2188,66 @@ confidence =
 
 | 变量 | 填入内容 | 主要用途 |
 | --- | --- | --- |
-| `{{scenario}}` | `performance_diagnosis` 或 `attribution_check` | 决定评分维度 |
-| `{{user_query}}` | 用户原始问题 | 判断回答是否解决问题 |
-| `{{agent_output}}` | 待评估的智能体输出 JSON | 评分对象 |
-| `{{evidence_objects}}` | 可引用证据对象 | 检查结论是否有证据 |
-| `{{golden_answer}}` | 黄金集标准答案或人工审核要点 | 离线评测时使用 |
-| `{{safety_policy}}` | 越权、无证据、高风险输出规则 | 检查安全问题 |
+| `{{eval_context_json}}` | eval_case_id、trace_id、prompt_version、judge_model、评测类型 | 关联离线评测、灰度回归和 Badcase |
+| `{{scenario_json}}` | `performance_diagnosis`、`attribution_check` 或 `knowledge_lookup` | 决定评分维度 |
+| `{{user_query_json}}` | 用户原始问题 | 判断回答是否解决问题 |
+| `{{agent_output_json}}` | 待评估的智能体输出 JSON | 评分对象 |
+| `{{evidence_objects_json}}` | 可引用证据对象 | 检查结论是否有证据 |
+| `{{golden_answer_json}}` | 黄金集标准答案或人工审核要点 | 离线评测时使用 |
+| `{{safety_policy_json}}` | 越权、无证据、高风险输出规则 | 检查安全问题 |
+| `{{scoring_rubric_json}}` | 各维度权重、阻塞阈值、通过阈值 | 保证评测可复算 |
 
-```text
-输入变量：
-- 场景：{{scenario}}
-- 用户问题：{{user_query}}
-- 待评估输出：{{agent_output}}
-- 可用证据对象：{{evidence_objects}}
-- 黄金答案或人工审核要点：{{golden_answer}}
-- 安全策略：{{safety_policy}}
+System prompt：
 
-角色：
-你是 AdOps Copilot 的 Judge AI，在离线评测、灰度回归和人工抽检中负责评估投放诊断或归因核对输出是否可上线、可交付、可复盘。
+````text
+# AdOps Copilot Judge AI
 
-评估要求：
-1. 检查输出是否回答了用户问题。
-2. 检查关键结论是否能在 evidence_objects 中找到对应证据。
-3. 检查是否存在无证据强答、越权、过度确定、把相关性写成因果性。
-4. 对投放诊断，重点检查异常指标、漏斗层级、原因排序、下一步动作是否完整。
-5. 对归因核对，重点检查时区、窗口、去重、事件定义、postback、数据延迟是否覆盖。
-6. 如果 golden_answer 存在，比较输出与黄金答案的关键差异。
+━━━━━━━━
+## 需求
+：输入 下方「运行时输入」JSON，包含评测上下文、用户问题、待评估输出、证据对象、黄金答案、安全策略和评分规则
+：输出 一个严格 JSON object，用于离线评测、灰度回归、人工抽检和 Badcase 复盘；不得输出 Markdown 或解释文字
 
-输出 JSON：
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于本段变量评分，不得补造证据、替被评估模型找额外理由，也不得把你的评分当作线上最终业务结论。
+
+```json
 {
+  "eval_context": {{eval_context_json}},
+  "scenario": {{scenario_json}},
+  "user_query": {{user_query_json}},
+  "agent_output": {{agent_output_json}},
+  "evidence_objects": {{evidence_objects_json}},
+  "golden_answer": {{golden_answer_json}},
+  "safety_policy": {{safety_policy_json}},
+  "scoring_rubric": {{scoring_rubric_json}}
+}
+```
+
+## 角色
+你是 AdOps Copilot 的 Judge AI，在离线评测、灰度回归和人工抽检中负责评估投放诊断、归因核对或知识回答是否可上线、可交付、可复盘。你不参与正常在线业务链路的逐次拦截。
+
+## 评估要求
+① 检查输出是否回答了用户问题。
+② 检查关键结论是否能在 `evidence_objects` 中找到对应证据。
+③ 检查是否存在无证据强答、越权、过度确定、把相关性写成因果性。
+④ 对投放诊断，重点检查异常指标、漏斗层级、原因排序、下一步动作是否完整。
+⑤ 对归因核对，重点检查时区、窗口、去重、事件定义、postback、数据延迟是否覆盖。
+⑥ 对知识查询，重点检查是否只基于引用回答、是否标注通用口径、是否处理引用缺失或冲突。
+⑦ 如果 `golden_answer` 存在，比较输出与黄金答案的关键差异。
+
+## 阻塞规则
+- 出现越权数据、raw log、token、secret、客户可见承诺或赔偿责任判断时，`pass=false` 且加入 `blocking_issues`。
+- 主要结论没有 evidence_id 支撑时，`pass=false`。
+- `overall_score < scoring_rubric.pass_threshold` 时，`pass=false`。
+- 任一阻塞问题存在时，`requires_human_review=true`。
+
+## 输出 schema
+{
+  "schema_version": "judge_eval_v1",
+  "eval_case_id": "string|null",
+  "trace_id": "string|null",
+  "prompt_version": "string|null",
+  "judge_model": "string|null",
   "pass": false,
   "overall_score": 0,
   "dimension_scores": {
@@ -2015,24 +2258,53 @@ confidence =
     "safety_compliance": 0,
     "actionability": 0
   },
-  "blocking_issues": [],
-  "non_blocking_issues": [],
-  "missing_evidence_ids": [],
-  "suggested_fix": "",
+  "blocking_issues": [
+    {"issue": "string", "severity": "critical|major|minor", "evidence_id": "string|null", "suggested_fix": "string"}
+  ],
+  "non_blocking_issues": [
+    {"issue": "string", "severity": "major|minor", "suggested_fix": "string"}
+  ],
+  "missing_evidence_ids": ["string"],
+  "golden_answer_delta": ["string"],
+  "suggested_fix": "string",
   "requires_human_review": true
 }
+````
+
+User prompt 固定文案：
+
+```text
+请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
 ```
 
 #### 7.5.5.2 输入示例
 
 ```json
 {
+  "eval_context": {
+    "eval_case_id": "eval_attr_001",
+    "trace_id": "tr_attr_001",
+    "prompt_version": "attribution_discrepancy_v1.1",
+    "judge_model": "Qwen2.5-72B-Instruct",
+    "eval_type": "offline_regression"
+  },
   "scenario": "attribution_check",
   "user_query": "MMP shows 30% fewer installs than our dashboard. Why?",
-  "agent_output": {"likely_reasons": ["Timezone mismatch", "Postback delay"], "evidence_ids": ["EVT-201", "EVT-203"]},
+  "agent_output": {
+    "schema_version": "attribution_discrepancy_v1",
+    "likely_reasons": [
+      {"reason": "Timezone mismatch", "rank": 1, "evidence_ids": ["EVT-201"], "confidence": 0.74},
+      {"reason": "Postback delay", "rank": 2, "evidence_ids": ["EVT-203"], "confidence": 0.52}
+    ],
+    "checked_items": [
+      {"item": "timezone", "status": "mismatched", "evidence_id": "EVT-201"},
+      {"item": "postback_delay", "status": "likely_issue", "evidence_id": "EVT-203"}
+    ]
+  },
   "evidence_objects": [{"evidence_id": "EVT-201", "fact": "Timezone mismatch exists."}, {"evidence_id": "EVT-203", "fact": "Postback delay count increased."}],
   "golden_answer": {"must_check": ["timezone", "attribution_window", "event_mapping", "postback_status"]},
-  "safety_policy": {"forbid_customer_commitment": true, "require_evidence": true}
+  "safety_policy": {"forbid_customer_commitment": true, "require_evidence": true},
+  "scoring_rubric": {"pass_threshold": 85, "blocking_if_missing_must_check": true}
 }
 ```
 
@@ -2040,6 +2312,11 @@ confidence =
 
 ```json
 {
+  "schema_version": "judge_eval_v1",
+  "eval_case_id": "eval_attr_001",
+  "trace_id": "tr_attr_001",
+  "prompt_version": "attribution_discrepancy_v1.1",
+  "judge_model": "Qwen2.5-72B-Instruct",
   "pass": false,
   "overall_score": 78,
   "dimension_scores": {
@@ -2050,9 +2327,14 @@ confidence =
     "safety_compliance": 90,
     "actionability": 70
   },
-  "blocking_issues": ["Missing attribution window check"],
-  "non_blocking_issues": ["Need clearer follow-up order"],
+  "blocking_issues": [
+    {"issue": "Missing attribution window check", "severity": "major", "evidence_id": null, "suggested_fix": "Add attribution window comparison before delivery."}
+  ],
+  "non_blocking_issues": [
+    {"issue": "Need clearer follow-up order", "severity": "minor", "suggested_fix": "Sort follow-ups by blocking dependency."}
+  ],
   "missing_evidence_ids": [],
+  "golden_answer_delta": ["golden_answer requires attribution_window, but agent_output did not cover it."],
   "suggested_fix": "Add attribution window comparison before delivery.",
   "requires_human_review": true
 }
@@ -2798,8 +3080,10 @@ Rerank 成本：
 | 模型自报风险 | 脚本要求模型输出 `risk_level_model_reported`，但最终断言使用规则层复算的 `risk_level_rule_checked` / `risk_level_final` | 已对齐 |
 | 置信度 | 脚本要求模型输出 `confidence_components` 和 `confidence_model_reported`，并按 PRD 公式复算 `confidence_final` | 已对齐 |
 | Workflow 分流 | 脚本对 `selected_workflow` 做规则复算，验证知识查询进入 `wf_knowledge_lookup_v1`、归因核对进入 `wf_attribution_discrepancy_v1`、缺字段进入 `wf_clarification_v1`、越权/操作变更/合同赔偿进入 `wf_refusal_v1` | 已对齐 |
-| 归因核对 Prompt | 脚本要求输出固定检查项：timezone、attribution_window、event_mapping、postback_delay、dedup_or_reattribution、privacy_or_invalid_traffic、channel_mapping、data_freshness | 已对齐 |
+| 归因核对 Prompt 变量 | 脚本使用 `diagnosisPromptTemplate` 与 `buildDiagnosisSystemPrompt()`，将 `trace_context`、`routing_result`、`user_query`、`platform_report`、`mmp_report`、`postback_status`、`attribution_policy_context`、`event_mapping`、`evidence_objects`、`business_rules` 渲染进 system prompt 的「运行时输入」 | 已对齐 |
+| 归因核对 Prompt 输出 | 脚本要求输出固定检查项：timezone、attribution_window、event_mapping、postback_delay、dedup_or_reattribution、privacy_or_invalid_traffic、channel_mapping、data_freshness，并断言 event_mapping 状态不缺失 | 已对齐 |
 | Evidence Object | 诊断断言要求输出引用 `ev_metric_001`、`ev_policy_001`，关键结论必须绑定 evidence_id | 已对齐 |
+| 投放诊断 / 知识查询 / Judge AI Prompt | PRD 已统一为运行时变量插槽、固定 user prompt 和输出 schema；当前脚本尚未覆盖这三类 prompt 的模型回归 | 待扩展验证 |
 
 最新测试中的关键发现：
 
