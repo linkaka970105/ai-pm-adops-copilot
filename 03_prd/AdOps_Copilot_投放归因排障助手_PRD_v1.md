@@ -490,9 +490,10 @@ RAG 检索结果：
     "summary": "The 28.0% gap is confirmed. The strongest current hypothesis is timezone/window mismatch; postback health does not show a large-scale failure.",
     "confirmed_facts": ["platform_installs=1250", "mmp_installs=900", "difference_rate=28.0%", "postback_success_rate=92.4%"],
     "likely_causes": [
-      {"cause": "timezone_or_attribution_window_mismatch", "confidence": 0.78, "evidence_ids": ["ev_metric_001", "ev_policy_001"]},
-      {"cause": "mmp_refresh_lag", "confidence": 0.46, "evidence_ids": ["ev_metric_001"]}
+      {"cause": "timezone_or_attribution_window_mismatch", "evidence_ids": ["ev_metric_001", "ev_policy_001"]},
+      {"cause": "mmp_refresh_lag", "evidence_ids": ["ev_metric_001"]}
     ],
+    "confidence_final": 0.78,
     "ruled_out": [{"cause": "large_scale_postback_failure", "reason": "reject_rate=0.8%, delayed_rate=6.8%"}],
     "next_actions": ["confirm MMP timezone setting", "compare install event mapping", "rerun report after next MMP sync"],
     "customer_facing_allowed": false
@@ -878,6 +879,18 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 
 本章每个独立需求都包含对应的输入输出、Prompt 设计、技术选型和验收方式。Prompt 的共性约束为：系统约束、任务说明、业务上下文、工具结果和输出 schema 分离维护；关键结论必须绑定 `evidence_id`；缺少证据时只能追问或输出待确认项；每次调用必须记录 `prompt_id`、`prompt_version`、`model`、`temperature` 和 Trace ID。
 
+## 7.0 Prompt 调用与变量来源统一约定
+
+本章所有 Prompt 模板默认把运行时变量填入 `system prompt` 的「运行时输入」JSON 块。变量必须由 workflow、工具网关、RAG 服务或评测平台生成，不能由模型自己补齐。
+
+固定 `user prompt` 不是业务 Prompt 的核心内容，只是兼容 Chat Completions 这类接口时的短触发语句。生产环境如果使用 `response_format=json_schema`、function calling 或内部 Prompt Runner，可省略固定 `user prompt`，直接通过 system prompt 和 JSON schema 约束输出。当前 E2E 脚本仍保留统一短句，目的是降低本地模型测试时的非 JSON 输出概率。
+
+统一短句如下：
+
+```text
+请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
+```
+
 ## 7.1 需求 0：总控智能体与权限路由
 
 ### 7.1.1 背景
@@ -1037,6 +1050,18 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 | `{{available_tools_json}}` | 工具名、参数 schema、权限要求、超时策略 | 输出候选工具约束，不直接调用工具 |
 | `{{phase_scope_json}}` | 当前阶段只支持投放诊断、归因核对、知识查询 | 判断范围外问题 |
 
+变量来源、获取过程与示例值：
+
+| 变量 | 来源系统 / 生成方 | 获取过程 | 缺失或失败处理 | 示例值 |
+| --- | --- | --- | --- | --- |
+| `current_time_json` | Prompt Runner | 服务端按请求进入时间生成，统一使用 UTC，同时保留用户默认时区 | 服务端时间不可用时拒绝调用模型并记录系统错误 | `"2025-02-15T10:00:00Z"` |
+| `user_query_json` | Copilot Chat / 工单插件 | 前端提交原始 query，后端保留未改写文本并绑定 `trace_id` | 空 query 不调用模型，返回输入为空提示 | `"AppsFlyer shows fewer installs than our dashboard yesterday"` |
+| `conversation_context_json` | Session Store | 取最近 N 轮摘要，只保留用户确认过的实体、上一轮追问和当前 trace 信息 | 摘要失败则传空数组，不继承未确认实体 | `[{"role":"user","summary":"User is checking campaign C123"}]` |
+| `user_profile_json` | IAM / HRIS / 用户配置 | 通过 `user_id` 查询角色、团队、语言偏好和区域 | 查询失败时仅保留 `user_id`，风险等级至少 medium | `{"role":"AdOps","team":"Global Growth","language":"en"}` |
+| `permission_scope_json` | RBAC/ABAC 权限服务 | 用 `user_id + account_id/app_id` 查询可访问账户、campaign、MMP 和工具权限 | 权限未知时禁止调用账户/MMP 工具，进入澄清或拒绝 | `{"accounts":["A001"],"campaigns":["C123"],"mmp_access":["AppsFlyer"]}` |
+| `available_tools_json` | Tool Registry + 灰度配置 | 读取当前环境启用工具、参数 schema、权限要求、超时和降级策略 | 工具注册表失败时只允许 knowledge_lookup 或提示稍后重试 | `[{"tool_name":"get_platform_report","required_permission":"account_scope"}]` |
+| `phase_scope_json` | Product Config / Prompt 管理后台 | 由当前 PRD 阶段、灰度开关和用户组共同决定 | 缺失时默认仅开放 `knowledge_lookup` | `["campaign_performance_diagnosis","attribution_discrepancy_check","knowledge_lookup"]` |
+
 #### 7.1.6.2 字段枚举与校验规则
 
 | 字段 | 类型/枚举 | 校验规则 | 失败处理 |
@@ -1114,7 +1139,7 @@ confidence_final =
 系统实际调用时由两部分组成：
 
 1. system prompt：使用下方中文总控 Prompt 模板，并在「运行时输入」段落中填入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools` 和 `phase_scope`。
-2. user prompt：只发送一条短指令，要求模型读取 system prompt 中已经填入的「运行时输入」并返回严格 JSON object。
+2. user prompt：生产环境如果使用 JSON mode / function calling，可省略固定 user prompt；本地 E2E 仅保留第 7.0 的统一短句作为 chat-completion 兼容层。
 
 设计理由：变量插槽必须出现在 Prompt 模板正文中，而不是只在文档里解释字段含义。否则研发实现时容易把字段说明和真实输入拆开，导致模型无法稳定知道当前 query、权限、工具和阶段范围。
 
@@ -1330,12 +1355,6 @@ System prompt：
 }
 ```
 
-User prompt 固定文案：
-
-```text
-请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
-```
-
 #### 7.1.6.6 Few-shot 示例
 
 以下 few-shot 属于 Prompt 的一部分，必须随 routing system prompt 一起版本化、评测和回滚。PRD 中保留完整 JSON，而不是只保留摘要，便于研发、算法和面试复盘直接对齐测试脚本。
@@ -1452,13 +1471,12 @@ Few-shot 4:
     "primary_hypothesis": {
       "reason": "Conversion tracking or landing page issue",
       "category": "tracking",
-      "evidence_ids": ["ev_metric_001"],
-      "confidence": 0.72
+      "evidence_ids": ["ev_metric_001"]
     },
     "alternative_hypotheses": [
       {"reason": "Postback delay needs follow-up.", "category": "attribution", "evidence_ids": [], "status": "needs_followup"}
     ],
-    "confidence": 0.72,
+    "confidence_final": 0.72,
     "next_actions": [
       {"action": "Check postback status.", "owner": "Engineering", "action_type": "read_only_check", "blocking": true},
       {"action": "Verify landing page availability.", "owner": "AdOps", "action_type": "manual_confirm", "blocking": false}
@@ -1485,6 +1503,19 @@ Few-shot 4:
 | `{{retrieved_knowledge_json}}` | 投放 SOP、指标口径、历史案例 | 约束诊断路径和原因分类 |
 | `{{evidence_objects_json}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
 | `{{business_rules_json}}` | 指标计算、异常阈值、时间窗口规则 | 防止模型自行计算或改口径 |
+
+变量来源、获取过程与示例值：
+
+| 变量 | 来源系统 / 生成方 | 获取过程 | 缺失或失败处理 | 示例值 |
+| --- | --- | --- | --- | --- |
+| `trace_context_json` | Prompt Runner / Trace 服务 | 会话创建时生成 `trace_id`，调用模型前写入 `prompt_version`、`model`、入口和时间 | 缺失时不调用模型，避免结果无法审计 | `{"trace_id":"tr_perf_001","prompt_version":"performance_diagnosis_v1.0","model":"DeepSeek-V3"}` |
+| `routing_result_json` | 总控 workflow | 读取规则归一后的 `routing_final`，不是直接读取模型原始输出 | intent 不匹配时返回 `unsupported_intent`，不继续诊断 | `{"intent":"campaign_performance_diagnosis","entities":{"campaign_id":"C123","metric":"installs"}}` |
+| `user_query_json` | Copilot Chat / 工单插件 | 从原始请求继承，不使用改写后的 query 替代 | 空 query 进入澄清 | `"Why did installs drop for campaign C123 yesterday?"` |
+| `metric_results_json` | `get_campaign_metrics` + SQL 模板 | workflow 按 account/campaign/time_range 查询当前周期、基线周期和漏斗指标，规则层先完成同比/环比计算 | 工具失败时传 `null`，模型只能输出待补充，不得诊断主因 | `{"click_change":"+2.1%","install_change":"-38.0","cvr_change":"-39.2%"}` |
+| `account_status_json` | `get_account_status` | 查询账户余额、预算、投放状态、审核状态和配置状态 | 缺失时 `missing_evidence` 必须包含 `account_status`，置信度封顶由规则层处理 | `{"delivery_status":"active","budget_status":"sufficient"}` |
+| `retrieved_knowledge_json` | RAG 服务 | 基于 intent、metric、campaign type 检索 SOP、指标口径和历史案例，经过权限过滤和 rerank | 无可靠引用时传空数组，模型不得引用 SOP 支撑确定结论 | `[{"doc_id":"SOP-PERF-017","title":"Install drop checklist"}]` |
+| `evidence_objects_json` | Evidence Builder | 将指标结果、账户状态、知识引用归一为 evidence object，绑定 `evidence_id`、来源和可见性 | 无 evidence 时只允许输出待补充或追问 | `[{"evidence_id":"EVT-001","fact":"Clicks stable while installs dropped."}]` |
+| `business_rules_json` | 规则配置中心 | 加载异常阈值、基线窗口、置信度公式、禁止动作和降级策略 | 缺失时不调用诊断模型 | `{"baseline_window":"previous_7_days","conversion_drop_threshold":"20%"}` |
 
 System prompt：
 
@@ -1521,7 +1552,7 @@ System prompt：
 ③ 对比当前周期与基线周期，并检查上游指标是否同步变化。
 ④ 按预算、出价、库存、素材状态、审核状态、归因、追踪、市场波动分类候选原因。
 ⑤ 只把有 `evidence_id` 支撑的原因放入 `primary_hypothesis` 或 `alternative_hypotheses`。
-⑥ 根据证据覆盖、工具新鲜度和业务规则计算 `confidence`，不得使用主观感觉打分。
+⑥ 输出可复算的证据覆盖信息和缺失项；最终 `confidence_final` 由 workflow 规则层计算，不由模型输出。
 
 ## 禁止
 - 不得用模型自行计算输入中不存在的指标。
@@ -1540,8 +1571,7 @@ System prompt：
   "primary_hypothesis": {
     "reason": "string",
     "category": "budget|bid|inventory|creative|review|tracking|attribution|market|data_quality|unknown",
-    "evidence_ids": ["string"],
-    "confidence": 0.0
+    "evidence_ids": ["string"]
   },
   "alternative_hypotheses": [
     {
@@ -1555,8 +1585,15 @@ System prompt：
     {"reason": "string", "evidence_ids": ["string"], "why_excluded": "string"}
   ],
   "missing_evidence": ["metric_results|account_status|retrieved_knowledge|evidence_objects|business_rules"],
-  "confidence": 0.0,
-  "confidence_reason": "string",
+  "confidence_rule_inputs": {
+    "has_current_metric_data": true,
+    "has_account_status": true,
+    "has_key_funnel_metrics": true,
+    "has_reviewed_knowledge": true,
+    "has_conflicting_evidence": false,
+    "freshness_status": "fresh|stale|unknown",
+    "tool_degradation": "none|cache|etl_snapshot|manual_upload"
+  },
   "next_actions": [
     {"action": "string", "owner": "AdOps|AM|Data|Engineering|MMP owner", "action_type": "read_only_check|manual_confirm|escalate", "blocking": true}
   ],
@@ -1565,22 +1602,33 @@ System prompt：
 }
 ````
 
-User prompt 固定文案：
+#### 7.2.6.2 置信度规则层计算与输出约束
+
+投放诊断 Prompt 不输出数值 `confidence`。模型只输出 `confidence_rule_inputs`、证据引用和缺失证据；workflow 根据下列规则计算并回写 `confidence_final` 到最终诊断卡。
 
 ```text
-请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
+confidence_final =
+  round(
+    0.25 × has_current_metric_data
+  + 0.20 × has_account_status
+  + 0.20 × has_key_funnel_metrics
+  + 0.15 × has_reviewed_knowledge
+  + 0.20 × primary_hypothesis_has_evidence,
+    2
+  )
+
+若 has_conflicting_evidence=true，confidence_final -= 0.15。
+若 freshness_status != fresh，confidence_final -= 0.10。
+若 tool_degradation != none，confidence_final -= 0.10。
+最终结果裁剪到 0-0.85；需要客户可见解释或操作动作时强制 requires_human_review=true。
 ```
-
-#### 7.2.6.2 置信度与输出约束
-
-投放诊断的 `confidence` 不是模型主观判断，而是由证据覆盖和规则条件共同约束：
 
 | 条件 | 规则 |
 | --- | --- |
-| 只有知识引用、没有当前报表数据 | `confidence <= 0.40`，只能输出排查建议 |
-| 有当前报表数据，但缺少账户状态或关键上游指标 | `confidence <= 0.60`，必须标记待补充 |
-| 有报表、账户状态、关键漏斗指标和至少 1 条 SOP/历史案例引用 | `confidence` 可到 0.70-0.80 |
-| 证据互相冲突、数据新鲜度不足、工具降级到缓存/ETL | `confidence` 至少下调 0.15，并要求人工确认 |
+| 只有知识引用、没有当前报表数据 | `confidence_final <= 0.40`，只能输出排查建议 |
+| 有当前报表数据，但缺少账户状态或关键上游指标 | `confidence_final <= 0.60`，必须标记待补充 |
+| 有报表、账户状态、关键漏斗指标和至少 1 条 SOP/历史案例引用 | `confidence_final` 可到 0.70-0.80 |
+| 证据互相冲突、数据新鲜度不足、工具降级到缓存/ETL | `confidence_final` 至少下调 0.15，并要求人工确认 |
 | 需要客户可见解释、预算/出价/配置动作 | 不在当前 prompt 输出，转人工或后续 PRD |
 
 字段输出要求：
@@ -1617,8 +1665,7 @@ User prompt 固定文案：
   "primary_hypothesis": {
     "reason": "Conversion-side issue is more likely because clicks stayed stable while installs dropped.",
     "category": "tracking",
-    "evidence_ids": ["EVT-001"],
-    "confidence": 0.72
+    "evidence_ids": ["EVT-001"]
   },
   "alternative_hypotheses": [
     {"reason": "MMP reporting delay may explain part of the gap.", "category": "attribution", "evidence_ids": [], "status": "needs_followup"},
@@ -1628,8 +1675,15 @@ User prompt 固定文案：
     {"reason": "Budget exhaustion", "evidence_ids": ["EVT-002"], "why_excluded": "Budget status is sufficient and delivery is active."}
   ],
   "missing_evidence": ["postback_status", "mmp_report"],
-  "confidence": 0.72,
-  "confidence_reason": "Current metrics and account status are present, but attribution/postback evidence is still missing.",
+  "confidence_rule_inputs": {
+    "has_current_metric_data": true,
+    "has_account_status": true,
+    "has_key_funnel_metrics": true,
+    "has_reviewed_knowledge": true,
+    "has_conflicting_evidence": false,
+    "freshness_status": "fresh",
+    "tool_degradation": "none"
+  },
   "next_actions": [
     {"action": "Check MMP install report for the same time window.", "owner": "AdOps", "action_type": "read_only_check", "blocking": true},
     {"action": "Check postback delay and failure status.", "owner": "Engineering", "action_type": "read_only_check", "blocking": true},
@@ -1645,9 +1699,9 @@ User prompt 固定文案：
 | 能力 | 选型 | 理由 |
 | --- | --- | --- |
 | 指标计算 | 规则引擎 + SQL 模板 | 指标判断必须确定性，不能由模型自由计算 |
-| 诊断总结 | GPT-4o mini | 英文总结稳定，成本可控 |
-| 复杂多维归因 | GPT-4o 或 DeepSeek-Reasoner | 多指标、多时间窗口、多假设排序需要更强推理 |
-| 知识检索 | OpenAI text-embedding-3-large + Cohere Rerank 3.5 | 英文和混合语义检索稳定，重排序提升引用准确率 |
+| 诊断总结 | DeepSeek-V3 + 规则引擎 | 与第 8 章一致，指标计算和置信度由规则层完成，模型只做证据解释、原因排序和摘要生成 |
+| 复杂多维排查 | Qwen2.5-72B-Instruct 或 DeepSeek-V3，复杂冲突升级 DeepSeek-R1/DeepSeek-Reasoner | 常规场景优先国内模型控制成本和合规风险；多指标冲突、证据矛盾时才升级推理模型 |
+| 知识检索 | BAAI bge-m3 或 Alibaba text-embedding-v3 + BAAI bge-reranker-v2-m3 或 Alibaba gte-rerank | 与第 8 章一致，国内/可私有化方案优先；OpenAI embedding 和 Cohere Rerank 仅作为合规可用时的离线对照 |
 
 ### 7.2.8 页面草图
 
@@ -1742,8 +1796,8 @@ User prompt 固定文案：
       {"item": "postback_delay", "status": "likely_issue", "evidence_id": "ev_postback_001", "reason": "Delayed postbacks may explain part of the gap."}
     ],
     "likely_reasons": [
-      {"reason": "Attribution window mismatch", "rank": 1, "evidence_ids": ["ev_policy_001"], "confidence": 0.68},
-      {"reason": "Postback delay", "rank": 2, "evidence_ids": ["ev_postback_001"], "confidence": 0.52}
+      {"reason": "Attribution window mismatch", "rank": 1, "evidence_ids": ["ev_policy_001"]},
+      {"reason": "Postback delay", "rank": 2, "evidence_ids": ["ev_postback_001"]}
     ],
     "required_followups": ["confirm MMP timezone", "check rejected postbacks"],
     "internal_explanation_summary": "The discrepancy may be related to attribution window mismatch and postback delay. MMP timezone and rejected postbacks need confirmation.",
@@ -1771,6 +1825,21 @@ User prompt 固定文案：
 | `{{evidence_objects_json}}` | 标准化证据对象列表 | 所有结论必须引用 evidence_id |
 | `{{business_rules_json}}` | 差异率公式、阈值、置信度封顶规则 | 防止模型自由计算或改口径 |
 
+变量来源、获取过程与示例值：
+
+| 变量 | 来源系统 / 生成方 | 获取过程 | 缺失或失败处理 | 示例值 |
+| --- | --- | --- | --- | --- |
+| `trace_context_json` | Prompt Runner / Trace 服务 | 模型调用前写入 trace、prompt、模型和时间信息 | 缺失时不调用模型 | `{"trace_id":"tr_attr_001","prompt_version":"attribution_discrepancy_v1.1"}` |
+| `routing_result_json` | 总控 workflow | 读取规则归一后的归因核对路由结果和实体 | intent 不匹配时返回 `unsupported_intent`，不进入归因诊断 | `{"intent":"attribution_discrepancy_check","entities":{"campaign_id":"C123","mmp":"AppsFlyer"}}` |
+| `user_query_json` | Copilot Chat / 工单插件 | 继承用户原始 query，用于判断解释是否回应问题 | 空 query 进入澄清 | `"AppsFlyer installs are lower than our dashboard yesterday."` |
+| `platform_report_json` | `get_platform_report` | 按 account/campaign/app/event/time_range/timezone 查询平台聚合指标 | 缺失时 `confidence_final <= 0.45`，不得输出确定原因 | `{"timezone":"UTC","installs":10000,"window":"2025-02-14"}` |
+| `mmp_report_json` | `get_mmp_report` | 按 app/campaign/event/time_range/timezone 查询 MMP 聚合指标 | 缺失时 `confidence_final <= 0.45`，必须要求补充 MMP 数据 | `{"timezone":"PST","installs":7200,"window":"2025-02-14"}` |
+| `postback_status_json` | `get_postback_summary` | 查询聚合 success、delay、failed、reject，不传 raw URL 或用户级日志 | 缺失时 postback 只能标记 `not_supported_by_evidence` | `{"success_rate":"96%","delayed_count":830}` |
+| `attribution_policy_context_json` | RAG 归因口径库 | 检索 reviewed attribution policy、MMP timezone/window、dedup 规则 | 无 reviewed 引用时不得把口径作为确定主因 | `[{"doc_id":"ATTR-003","fact":"MMP report uses advertiser local timezone by default."}]` |
+| `event_mapping_json` | Event Mapping 服务 / MMP 配置表 | 查询平台 event 与 MMP/客户 event 映射和最后审核时间 | 缺失时 `event_mapping` 必查项标记 `needs_followup` | `{"platform_event":"install","mmp_event":"install","status":"matched"}` |
+| `evidence_objects_json` | Evidence Builder | 将报表差异、口径引用、postback 摘要归一化为 evidence object | 无 evidence 时不允许输出主结论 | `[{"evidence_id":"EVT-201","fact":"Platform and MMP reports use different timezone."}]` |
+| `business_rules_json` | 规则配置中心 | 加载差异率公式、material threshold、置信度公式和封顶规则 | 缺失时不调用诊断模型 | `{"difference_rate_formula":"abs(platform_value-mmp_value)/platform_value"}` |
+
 System prompt：
 
 ````text
@@ -1796,6 +1865,15 @@ System prompt：
   "event_mapping": {{event_mapping_json}},
   "evidence_objects": {{evidence_objects_json}},
   "business_rules": {{business_rules_json}}
+}
+```
+
+规则层回写到最终诊断卡的字段示例：
+
+```json
+{
+  "confidence_final": 0.72,
+  "confidence_reason": "Current metrics and account status are present, but attribution/postback evidence is still missing."
 }
 ```
 
@@ -1833,24 +1911,26 @@ System prompt：
     }
   ],
   "likely_reasons": [
-    {"reason": "string", "rank": 1, "evidence_ids": ["string"], "confidence": 0.0}
+    {"reason": "string", "rank": 1, "evidence_ids": ["string"]}
   ],
   "excluded_reasons": [
     {"reason": "string", "evidence_ids": ["string"], "why_excluded": "string"}
   ],
   "required_followups": ["string"],
-  "confidence": 0.0,
-  "confidence_reason": "string",
+  "confidence_rule_inputs": {
+    "has_platform_report": true,
+    "has_mmp_report": true,
+    "has_reviewed_policy_citation": true,
+    "has_postback_summary": true,
+    "covered_checklist_count": 0,
+    "primary_reason_evidence_count": 0,
+    "has_core_data_conflict": false,
+    "freshness_unknown": false
+  },
   "internal_explanation_summary": "string",
   "requires_human_review": true
 }
 ````
-
-User prompt 固定文案：
-
-```text
-请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
-```
 
 #### 7.3.6.2 固定 workflow 与置信度规则
 
@@ -1867,10 +1947,10 @@ User prompt 固定文案：
 | `channel_mapping` | campaign/ad group/publisher 映射 | 映射缺失时列为 follow-up |
 | `data_freshness` | 数据刷新时间、ETL 批次、缓存状态 | 数据过旧时降低置信度 |
 
-`confidence` 计算规则：
+`confidence_final` 由 workflow 规则层计算，不由模型输出。模型只输出 `confidence_rule_inputs` 和证据解释，规则层按下列公式回写最终诊断卡：
 
 ```text
-confidence =
+confidence_final =
   0.30 基础分
 + 0.15 当前平台和 MMP 值同时存在
 + 0.15 至少 1 条 reviewed 归因口径引用支撑主因
@@ -1882,9 +1962,9 @@ confidence =
 
 封顶规则：
 
-1. 未同时取得平台报表和 MMP 报表时，`confidence <= 0.45`。
-2. 未对齐时区和归因窗口时，`confidence <= 0.85`。
-3. 只有知识引用、没有当前数据时，`confidence <= 0.40`。
+1. 未同时取得平台报表和 MMP 报表时，`confidence_final <= 0.45`。
+2. 未对齐时区和归因窗口时，`confidence_final <= 0.85`。
+3. 只有知识引用、没有当前数据时，`confidence_final <= 0.40`。
 4. 使用缓存、ETL 快照或人工上传报表时，必须显示数据来源和 `data_freshness`，并下调至少 0.10。
 5. 需要对客户解释前，`requires_human_review=true`。
 
@@ -1923,17 +2003,34 @@ confidence =
     {"item": "data_freshness", "status": "needs_followup", "evidence_id": null, "reason": "MMP refresh timestamp was not provided."}
   ],
   "likely_reasons": [
-    {"reason": "Timezone mismatch", "rank": 1, "evidence_ids": ["EVT-201"], "confidence": 0.74},
-    {"reason": "Partial postback delay", "rank": 2, "evidence_ids": ["EVT-203"], "confidence": 0.52}
+    {"reason": "Timezone mismatch", "rank": 1, "evidence_ids": ["EVT-201"]},
+    {"reason": "Partial postback delay", "rank": 2, "evidence_ids": ["EVT-203"]}
   ],
   "excluded_reasons": [
     {"reason": "Event mapping mismatch", "evidence_ids": ["EVT-202"], "why_excluded": "Platform and MMP event names are both install."}
   ],
   "required_followups": ["Re-run both reports in UTC", "Check delayed postback recovery after 24 hours"],
-  "confidence": 0.68,
-  "confidence_reason": "Current platform and MMP values exist and timezone evidence supports the primary reason, but attribution window and freshness still need follow-up.",
+  "confidence_rule_inputs": {
+    "has_platform_report": true,
+    "has_mmp_report": true,
+    "has_reviewed_policy_citation": true,
+    "has_postback_summary": true,
+    "covered_checklist_count": 8,
+    "primary_reason_evidence_count": 1,
+    "has_core_data_conflict": false,
+    "freshness_unknown": true
+  },
   "internal_explanation_summary": "Timezone mismatch is the primary suspect; delayed postbacks may explain part of the remaining gap.",
   "requires_human_review": true
+}
+```
+
+规则层回写到最终诊断卡的字段示例：
+
+```json
+{
+  "confidence_final": 0.68,
+  "confidence_reason": "Current platform and MMP values exist and timezone evidence supports the primary reason, but attribution window and freshness still need follow-up."
 }
 ```
 
@@ -1942,9 +2039,9 @@ confidence =
 | 能力 | 选型 | 理由 |
 | --- | --- | --- |
 | 差异计算 | SQL 模板 + 固定公式 | 差异比例和口径判断要求可复核 |
-| 归因解释 | GPT-4o mini | 英文解释能力强，适合生成结构化说明 |
-| 复杂口径推理 | Qwen2.5-72B-Instruct 或 DeepSeek-Reasoner | 可作为备选模型验证多因素原因排序 |
-| 文档检索 | bge-m3 + bge-reranker-v2-m3 作为中国厂商/开源备选 | 降低供应商风险，支持中英混合知识 |
+| 归因解释 | Qwen2.5-72B-Instruct + 固定 workflow | 与第 8 章一致，归因核对优先保证检查清单完整、JSON 稳定和低成本 |
+| 复杂口径推理 | Qwen2.5-72B-Instruct 常规处理，DeepSeek-R1/DeepSeek-Reasoner 复杂升级 | 多因素冲突、证据矛盾或疑难归因时再升级推理模型，避免每次在线链路都用强模型 |
+| 文档检索 | BAAI bge-m3 或 Alibaba text-embedding-v3 + BAAI bge-reranker-v2-m3 或 Alibaba gte-rerank | 国内/开源方案作为默认，支持中英混合知识；OpenAI/Cohere 仅作为合规可用时的离线对照 |
 
 ### 7.3.8 验收与灰度
 
@@ -2031,7 +2128,6 @@ confidence =
     ],
     "citation_coverage": "sufficient",
     "missing_required_sources": [],
-    "confidence_final": 0.82,
     "limitations": ["This answer explains the general policy and does not check any specific campaign data."],
     "next_actions": ["If you need to check a specific campaign, provide campaign_id, app_id, event_name and time range."],
     "requires_human_review": false
@@ -2050,6 +2146,18 @@ confidence =
 | `{{source_type_scope_json}}` | 允许引用的文档类型 | 防止引用无关历史案例或范围外资料 |
 | `{{language_preference_json}}` | 用户语言和系统界面语言 | 决定回答语言 |
 | `{{citation_policy_json}}` | 引用阈值、deprecated 处理、冲突处理规则 | 控制无引用强答和过期知识 |
+
+变量来源、获取过程与示例值：
+
+| 变量 | 来源系统 / 生成方 | 获取过程 | 缺失或失败处理 | 示例值 |
+| --- | --- | --- | --- | --- |
+| `trace_context_json` | Prompt Runner / Trace 服务 | 写入 trace、prompt 版本、模型和时间 | 缺失时不调用模型 | `{"trace_id":"tr_knowledge_001","prompt_version":"knowledge_lookup_v1.0"}` |
+| `user_query_json` | Copilot Chat / 工单插件 | 原始 query，不使用检索改写结果覆盖 | 空 query 进入澄清 | `"What attribution window do we use for OEM campaigns?"` |
+| `rewritten_queries_json` | Query Rewrite workflow | 按中文语义、英文语义、实体 query 生成 2-4 条检索 query | 改写失败时只用原始 query 检索 | `["OEM campaign attribution window","OEM 广告归因窗口"]` |
+| `selected_citations_json` | RAG 服务 | Hybrid/向量/实体召回后，经权限过滤、source_type 白名单、rerank、去重和 topK 截断生成 | 无可靠引用时传空数组，模型必须返回 `no_reliable_citation` | `[{"citation_id":"cit_oem_attr_001","title":"OEM attribution window policy","relevance_score":0.91}]` |
+| `source_type_scope_json` | Product Config + 总控路由 | 根据 intent 和当前 PRD 范围限制可引用类型 | 缺失时只允许 SOP/FAQ，不引用历史案例作主依据 | `["attribution_policy","metric_definition","sop","faq"]` |
+| `language_preference_json` | 用户配置 + query 语言识别 | 结合用户语言偏好、界面语言和 query 主语言 | 缺失时跟随 query 主语言 | `{"preferred":"en","query_language":"en","ui_language":"zh"}` |
+| `citation_policy_json` | 知识治理后台 | 加载最低 relevance、reviewed 状态、deprecated 过滤、冲突处理和 freshness 规则 | 缺失时不生成确定答案，只输出知识库配置异常 | `{"min_relevance":0.75,"allow_deprecated":false,"max_citations":5}` |
 
 System prompt：
 
@@ -2113,15 +2221,109 @@ System prompt：
   "missing_required_sources": ["string"],
   "limitations": ["string"],
   "next_actions": ["string"],
-  "confidence_final": 0.0,
   "requires_human_review": false
 }
 ````
 
-User prompt 固定文案：
+引用置信度由规则层计算，不由模型输出。规则层可按引用覆盖、最高相关度、引用状态和冲突情况回写 `confidence_final`：
 
 ```text
-请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
+confidence_final =
+  round(
+    0.40 × citation_coverage_score
+  + 0.30 × max_relevance_score
+  + 0.20 × reviewed_source_ratio
+  + 0.10 × freshness_score,
+    2
+  )
+
+citation_coverage=missing 时最高 0.30。
+citation_coverage=conflicting 时最高 0.50 且 requires_human_review=true。
+引用全部为 stale 或 deprecated 时最高 0.40。
+```
+
+#### 7.4.6.2 输入输出示例
+
+可靠引用示例：
+
+```json
+{
+  "runtime_input": {
+    "trace_context": {"trace_id": "tr_knowledge_001", "prompt_version": "knowledge_lookup_v1.0", "model": "DeepSeek-V3"},
+    "user_query": "What attribution window do we use for OEM campaigns?",
+    "rewritten_queries": ["OEM campaign attribution window", "OEM 广告归因窗口"],
+    "selected_citations": [
+      {
+        "citation_id": "cit_oem_attr_001",
+        "title": "OEM attribution window policy",
+        "source_type": "attribution_policy",
+        "version": "2025.01",
+        "effective_time": "2025-01-01",
+        "owner": "AdOps Policy",
+        "relevance_score": 0.91,
+        "reviewed_status": "reviewed"
+      }
+    ],
+    "source_type_scope": ["attribution_policy", "metric_definition", "sop", "faq"],
+    "language_preference": {"preferred": "en", "query_language": "en", "ui_language": "zh"},
+    "citation_policy": {"min_relevance": 0.75, "allow_deprecated": false, "max_citations": 5}
+  },
+  "model_output": {
+    "schema_version": "knowledge_lookup_v1",
+    "trace_id": "tr_knowledge_001",
+    "answer_type": "direct_answer",
+    "language": "en",
+    "answer": "For OEM campaigns, use the current OEM attribution policy and confirm the effective version before applying it to a specific case.",
+    "citations": [
+      {
+        "citation_id": "cit_oem_attr_001",
+        "title": "OEM attribution window policy",
+        "source_type": "attribution_policy",
+        "version": "2025.01",
+        "effective_time": "2025-01-01",
+        "owner": "AdOps Policy",
+        "relevance_score": 0.91
+      }
+    ],
+    "citation_coverage": "sufficient",
+    "missing_required_sources": [],
+    "limitations": ["This is a general policy answer and does not check any campaign data."],
+    "next_actions": ["For a specific campaign check, provide campaign_id, app_id, event_name and time range."],
+    "requires_human_review": false
+  },
+  "rule_layer_append": {
+    "confidence_final": 0.86
+  }
+}
+```
+
+无可靠引用 / 需要重新路由示例：
+
+```json
+{
+  "runtime_input": {
+    "user_query": "Why did campaign C123 installs drop yesterday?",
+    "selected_citations": [],
+    "source_type_scope": ["attribution_policy", "metric_definition", "sop", "faq"],
+    "citation_policy": {"min_relevance": 0.75, "allow_deprecated": false}
+  },
+  "model_output": {
+    "schema_version": "knowledge_lookup_v1",
+    "trace_id": "tr_knowledge_002",
+    "answer_type": "reroute_required",
+    "language": "en",
+    "answer": "",
+    "citations": [],
+    "citation_coverage": "missing",
+    "missing_required_sources": ["campaign metrics", "account status"],
+    "limitations": ["The query asks for current campaign diagnosis, not a pure knowledge lookup."],
+    "next_actions": ["Return to routing and start campaign_performance_diagnosis workflow."],
+    "requires_human_review": false
+  },
+  "rule_layer_append": {
+    "confidence_final": 0.20
+  }
+}
 ```
 
 ### 7.4.7 兜底规则
@@ -2197,6 +2399,19 @@ User prompt 固定文案：
 | `{{safety_policy_json}}` | 越权、无证据、高风险输出规则 | 检查安全问题 |
 | `{{scoring_rubric_json}}` | 各维度权重、阻塞阈值、通过阈值 | 保证评测可复算 |
 
+变量来源、获取过程与示例值：
+
+| 变量 | 来源系统 / 生成方 | 获取过程 | 缺失或失败处理 | 示例值 |
+| --- | --- | --- | --- | --- |
+| `eval_context_json` | Eval Runner / Prompt 管理后台 | 离线评测任务创建时生成 `eval_case_id`，绑定 trace、prompt_version、judge_model 和 eval_type | 缺失时不运行 Judge，避免评测不可追溯 | `{"eval_case_id":"eval_attr_001","trace_id":"tr_attr_001","eval_type":"offline_regression"}` |
+| `scenario_json` | Eval Case 元数据 | 由样本所属评测集决定，如 routing、performance、attribution、knowledge | 缺失时标记样本无效 | `"attribution_check"` |
+| `user_query_json` | Trace Store / 黄金集 | 从线上 trace 或人工构造黄金集读取原始 query | 缺失时样本无效 | `"MMP shows 30% fewer installs than our dashboard. Why?"` |
+| `agent_output_json` | 模型输出归档 / Trace Store | 读取待评估 prompt_version 的原始结构化输出 | 缺失时评测失败并记录数据问题 | `{"schema_version":"attribution_discrepancy_v1","likely_reasons":[...]}` |
+| `evidence_objects_json` | Evidence Store | 读取当次回答可见的 evidence object，而不是重新检索 | 缺失时 `evidence_alignment` 最高 40 分 | `[{"evidence_id":"EVT-201","fact":"Timezone mismatch exists."}]` |
+| `golden_answer_json` | 黄金集 / 人工审核表 | 离线评测时读取 must_check、expected_reason、forbidden_output | 无 golden 时只做规则评测，不做答案一致性扣分 | `{"must_check":["timezone","attribution_window","event_mapping"]}` |
+| `safety_policy_json` | 安全策略配置 | 读取当前版本的越权、客户承诺、敏感字段、无证据强答规则 | 缺失时不运行 Judge | `{"forbid_customer_commitment":true,"require_evidence":true}` |
+| `scoring_rubric_json` | Eval 配置中心 | 读取维度权重、通过阈值和阻塞项定义 | 缺失时使用默认 rubric 并标记配置告警 | `{"pass_threshold":85,"blocking_if_missing_must_check":true}` |
+
 System prompt：
 
 ````text
@@ -2271,12 +2486,6 @@ System prompt：
 }
 ````
 
-User prompt 固定文案：
-
-```text
-请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
-```
-
 #### 7.5.5.2 输入示例
 
 ```json
@@ -2293,8 +2502,8 @@ User prompt 固定文案：
   "agent_output": {
     "schema_version": "attribution_discrepancy_v1",
     "likely_reasons": [
-      {"reason": "Timezone mismatch", "rank": 1, "evidence_ids": ["EVT-201"], "confidence": 0.74},
-      {"reason": "Postback delay", "rank": 2, "evidence_ids": ["EVT-203"], "confidence": 0.52}
+      {"reason": "Timezone mismatch", "rank": 1, "evidence_ids": ["EVT-201"]},
+      {"reason": "Postback delay", "rank": 2, "evidence_ids": ["EVT-203"]}
     ],
     "checked_items": [
       {"item": "timezone", "status": "mismatched", "evidence_id": "EVT-201"},
@@ -3078,17 +3287,17 @@ Rerank 成本：
 | 意图枚举 | 覆盖 `campaign_performance_diagnosis`、`attribution_discrepancy_check`、`knowledge_lookup`、范围外和 `unknown` 的路由边界 | 已对齐 |
 | 风险信号 | 使用 PRD 风险信号枚举，包含 `account_data_read`、`mmp_data_read`、`postback_summary_read`、`permission_gap`、`sensitive_raw_data`、`customer_visible_reply` 等 | 已对齐 |
 | 模型自报风险 | 脚本要求模型输出 `risk_level_model_reported`，但最终断言使用规则层复算的 `risk_level_rule_checked` / `risk_level_final` | 已对齐 |
-| 置信度 | 脚本要求模型输出 `confidence_components` 和 `confidence_model_reported`，并按 PRD 公式复算 `confidence_final` | 已对齐 |
+| 总控置信度 | 脚本要求路由模型输出 `confidence_components` 和 `confidence_model_reported`，并按 PRD 公式复算 `confidence_final` | 已对齐 |
 | Workflow 分流 | 脚本对 `selected_workflow` 做规则复算，验证知识查询进入 `wf_knowledge_lookup_v1`、归因核对进入 `wf_attribution_discrepancy_v1`、缺字段进入 `wf_clarification_v1`、越权/操作变更/合同赔偿进入 `wf_refusal_v1` | 已对齐 |
 | 归因核对 Prompt 变量 | 脚本使用 `diagnosisPromptTemplate` 与 `buildDiagnosisSystemPrompt()`，将 `trace_context`、`routing_result`、`user_query`、`platform_report`、`mmp_report`、`postback_status`、`attribution_policy_context`、`event_mapping`、`evidence_objects`、`business_rules` 渲染进 system prompt 的「运行时输入」 | 已对齐 |
-| 归因核对 Prompt 输出 | 脚本要求输出固定检查项：timezone、attribution_window、event_mapping、postback_delay、dedup_or_reattribution、privacy_or_invalid_traffic、channel_mapping、data_freshness，并断言 event_mapping 状态不缺失 | 已对齐 |
+| 归因核对 Prompt 输出 | 脚本要求输出固定检查项：timezone、attribution_window、event_mapping、postback_delay、dedup_or_reattribution、privacy_or_invalid_traffic、channel_mapping、data_freshness，并断言 event_mapping 状态不缺失；模型不得输出 `confidence` / `confidence_final`，由脚本规则层回写 `confidence_final_rule_checked` | 已对齐 |
 | Evidence Object | 诊断断言要求输出引用 `ev_metric_001`、`ev_policy_001`，关键结论必须绑定 evidence_id | 已对齐 |
-| 投放诊断 / 知识查询 / Judge AI Prompt | PRD 已统一为运行时变量插槽、固定 user prompt 和输出 schema；当前脚本尚未覆盖这三类 prompt 的模型回归 | 待扩展验证 |
+| 投放诊断 / 知识查询 / Judge AI Prompt | PRD 已统一为运行时变量插槽、变量来源表和输出 schema；固定 user prompt 已收敛为第 7.0 的可选兼容层；当前脚本尚未覆盖这三类 prompt 的模型回归 | 待扩展验证 |
 
 最新测试中的关键发现：
 
 1. 缺少 `risk_level` 评判标准时，模型可能把“客户反馈问题”误判为“客户可见回复”，导致不必要的 high risk。Prompt 已补充规则：提到客户反馈不等于请求外部回复。
-2. 模型自报 `confidence` 可能和公式复算不一致。线上应采用 `confidence_final`，模型自报值只用于调试和 Badcase。
+2. 总控路由可以输出 `confidence_components` 供规则层复算；场景诊断 Prompt 不再输出数值 `confidence`，只输出证据覆盖和缺失项，最终 `confidence_final` 由 workflow 回写。
 3. 模型输出的 `missing_fields` 和 `next_action` 也需要规则复算。若 intent 的必填实体缺失，即使模型想进入 workflow，也必须先追问。
 4. 固定归因核查清单应由 workflow 加载，不应由 LLM 每次自由拆解。
 5. 诊断模型只负责证据解释和原因排序；差异比例、工具调用、权限和最终风控由确定性系统处理。

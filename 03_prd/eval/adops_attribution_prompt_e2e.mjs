@@ -658,17 +658,8 @@ const diagnosisPromptTemplate = `# 归因与数据不一致核对智能体
 - needs_followup
 - not_supported_by_evidence
 
-## 置信度规则
-- 基础分 0.30。
-- 当前平台和 MMP 值都存在，加 0.15。
-- 至少 1 条 reviewed 归因口径引用支撑主因，加 0.15。
-- postback 聚合摘要存在，加 0.10。
-- 至少覆盖 6 个必查项，加 0.10。
-- 主因至少被 2 个 evidence_id 支撑，加 0.10。
-- 核心数据冲突或数据新鲜度未知，减 0.20。
-- 未包含客户确认的对齐时区和 MMP raw validation 时，confidence 最高 0.85。
-- platform_report 或 mmp_report 任一缺失时，confidence 最高 0.45。
-- 四舍五入到 2 位小数。
+## 置信度职责边界
+最终数值置信度由 workflow 规则层计算，不由模型输出。你只需要输出证据解释、原因排序、缺失证据和后续动作；不要输出 confidence、confidence_final 或 confidence_reason。
 
 ## 禁止
 - 不得把单一证据解释成唯一确定原因，除非至少 2 个 evidence_id 支撑且没有冲突证据。
@@ -685,14 +676,22 @@ const diagnosisPromptTemplate = `# 归因与数据不一致核对智能体
     {"item": "string", "status": "matched|mismatched|likely_issue|needs_followup|not_supported_by_evidence", "evidence_id": "string|null", "reason": "string"}
   ],
   "likely_reasons": [
-    {"reason": "string", "rank": 1, "evidence_ids": ["string"], "confidence": 0.0}
+    {"reason": "string", "rank": 1, "evidence_ids": ["string"]}
   ],
   "excluded_reasons": [
     {"reason": "string", "evidence_ids": ["string"], "why_excluded": "string"}
   ],
   "required_followups": ["string"],
-  "confidence": 0.0,
-  "confidence_reason": "string",
+  "confidence_rule_inputs": {
+    "has_platform_report": true,
+    "has_mmp_report": true,
+    "has_reviewed_policy_citation": true,
+    "has_postback_summary": true,
+    "covered_checklist_count": 0,
+    "primary_reason_evidence_count": 0,
+    "has_core_data_conflict": false,
+    "freshness_unknown": false
+  },
   "internal_explanation_summary": "string",
   "requires_human_review": true
 }
@@ -720,7 +719,8 @@ function buildDiagnosisInput(routing, toolContext) {
     business_rules: {
       difference_rate_formula: "abs(platform_value - mmp_value) / platform_value",
       material_difference_threshold: 0.2,
-      confidence_caps: "without customer-confirmed aligned timezone and raw MMP validation, cap confidence at 0.85",
+      confidence_formula: "0.30 + 0.15*has_platform_and_mmp + 0.15*has_reviewed_policy_citation + 0.10*has_postback_summary + 0.10*covered_checklist_at_least_6 + 0.10*primary_reason_has_at_least_2_evidence_ids - 0.20*(core_data_conflict_or_freshness_unknown)",
+      confidence_caps: "cap at 0.85 without customer-confirmed aligned timezone and MMP raw validation; cap at 0.45 if either platform_report or mmp_report is missing",
     },
   };
 }
@@ -745,19 +745,41 @@ function buildDiagnosisUserPrompt() {
 }
 
 function validateDiagnosis(diagnosis) {
+  assert(!Object.prototype.hasOwnProperty.call(diagnosis, "confidence"), "diagnosis prompt must not output top-level confidence; workflow computes confidence_final");
+  assert(!Object.prototype.hasOwnProperty.call(diagnosis, "confidence_final"), "diagnosis prompt must not output confidence_final; workflow computes it");
   const checkedItems = new Map((diagnosis.checked_items || []).map((item) => [item.item, item]));
   for (const item of ["timezone", "attribution_window", "event_mapping", "postback_delay", "dedup_or_reattribution", "privacy_or_invalid_traffic", "channel_mapping", "data_freshness"]) {
     assert(checkedItems.has(item), `diagnosis missing checked item ${item}`);
   }
   assert(["mismatched", "likely_issue"].includes(checkedItems.get("timezone").status), `timezone should be mismatched/likely_issue, got ${checkedItems.get("timezone").status}`);
   assert(["matched", "needs_followup"].includes(checkedItems.get("event_mapping").status), `event_mapping should be matched/needs_followup, got ${checkedItems.get("event_mapping").status}`);
+  for (const reason of diagnosis.likely_reasons || []) {
+    assert(!Object.prototype.hasOwnProperty.call(reason, "confidence"), "likely_reasons must not include model-generated confidence");
+  }
   assert((diagnosis.likely_reasons || []).some((item) => /timezone|时区/i.test(item.reason)), "likely_reasons should include timezone");
   assert((diagnosis.required_followups || []).some((item) => /timezone|UTC|时区/i.test(item)), "required_followups should ask for timezone alignment");
-  assert(Number(diagnosis.confidence) >= 0.55 && Number(diagnosis.confidence) <= 0.85, `diagnosis confidence out of expected range: ${diagnosis.confidence}`);
   const allEvidenceIds = JSON.stringify(diagnosis);
   for (const id of ["ev_metric_001", "ev_policy_001"]) {
     assert(allEvidenceIds.includes(id), `diagnosis should cite ${id}`);
   }
+}
+
+function calculateDiagnosisConfidence(diagnosis, toolContext) {
+  const checkedItems = diagnosis.checked_items || [];
+  const likelyReasons = diagnosis.likely_reasons || [];
+  const primaryEvidenceCount = new Set(likelyReasons[0]?.evidence_ids || []).size;
+  const hasReviewedPolicyCitation = (toolContext.knowledge || []).some((item) => item.reviewed_status === "reviewed");
+  let score = 0.30;
+  if (toolContext.platformReport && toolContext.mmpReport) score += 0.15;
+  if (hasReviewedPolicyCitation) score += 0.15;
+  if (toolContext.postbackSummary) score += 0.10;
+  if (checkedItems.length >= 6) score += 0.10;
+  if (primaryEvidenceCount >= 2) score += 0.10;
+  const freshnessUnknown = !toolContext.platformReport?.data_freshness_minutes || !toolContext.mmpReport?.data_freshness_minutes;
+  if (freshnessUnknown) score -= 0.20;
+  if (!toolContext.platformReport || !toolContext.mmpReport) score = Math.min(score, 0.45);
+  score = Math.min(score, 0.85);
+  return Number(Math.max(0, Math.min(1, score)).toFixed(2));
 }
 
 async function main() {
@@ -782,6 +804,7 @@ async function main() {
     { role: "user", content: buildDiagnosisUserPrompt() },
   ], "diagnosis_attribution_case");
   validateDiagnosis(diagnosisResult.json);
+  const diagnosisConfidenceFinal = calculateDiagnosisConfidence(diagnosisResult.json, toolContext);
 
   const report = {
     generated_at: new Date().toISOString(),
@@ -792,6 +815,7 @@ async function main() {
     deterministic_tool_context: toolContext,
     diagnosis_case: {
       diagnosis: diagnosisResult.json,
+      confidence_final_rule_checked: diagnosisConfidenceFinal,
       usage: diagnosisResult.usage,
       elapsedMs: diagnosisResult.elapsedMs,
     },
