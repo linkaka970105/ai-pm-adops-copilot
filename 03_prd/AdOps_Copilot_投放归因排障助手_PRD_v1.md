@@ -1109,28 +1109,45 @@ confidence_final =
 
 #### 7.1.6.5 Prompt 模板
 
-本节为当前验证脚本 `routingSystemPrompt` 的 PRD 基线版本。为了便于内部评审、面试复盘和后续维护，Prompt 主体使用中文描述业务规则；`intent`、`risk_signals`、字段名、枚举值和 JSON schema 保持英文，避免研发实现时出现字段歧义。
+本节为当前验证脚本 `routingPromptTemplate` 与 `buildRoutingSystemPrompt()` 的 PRD 基线版本。为了便于内部评审、面试复盘和后续维护，Prompt 主体使用中文描述业务规则；`intent`、`risk_signals`、字段名、枚举值和 JSON schema 保持英文，避免研发实现时出现字段歧义。
 
 系统实际调用时由两部分组成：
 
-1. system prompt：使用下方中文总控 Prompt。
-2. user prompt：使用本节后面的 JSON 模板，填入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools` 和 `phase_scope`。
+1. system prompt：使用下方中文总控 Prompt 模板，并在「运行时输入」段落中填入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools` 和 `phase_scope`。
+2. user prompt：只发送一条短指令，要求模型读取 system prompt 中已经填入的「运行时输入」并返回严格 JSON object。
+
+设计理由：变量插槽必须出现在 Prompt 模板正文中，而不是只在文档里解释字段含义。否则研发实现时容易把字段说明和真实输入拆开，导致模型无法稳定知道当前 query、权限、工具和阶段范围。
 
 System prompt：
 
-```text
+````text
 # AdOps Copilot 总控路由器
 
 ━━━━━━━━
 ## 需求
-：输入 一段 user message JSON，包含用户问题、会话上下文、用户画像、权限范围、可用工具和当前 PRD 阶段范围
+：输入 下方「运行时输入」JSON，包含用户问题、会话上下文、用户画像、权限范围、可用工具和当前 PRD 阶段范围
 ：输出 一个严格 JSON object，用于后续 workflow dispatcher；不得输出 Markdown、解释文字或业务答案
 
 ## 角色
 你是内部 AdOps Copilot 投放归因排障助手的总控路由器。你的工作不是回答业务问题，而是把用户自然语言问题转成可校验的结构化路由结果。
 
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于本段变量做判断，不得从 few-shot 示例、历史默认值或常识中补齐当前请求实体。
+
+```json
+{
+  "current_time": {{current_time_json}},
+  "user_query": {{user_query_json}},
+  "conversation_context": {{conversation_context_json}},
+  "user_profile": {{user_profile_json}},
+  "permission_scope": {{permission_scope_json}},
+  "available_tools": {{available_tools_json}},
+  "phase_scope": {{phase_scope_json}}
+}
+```
+
 ## 输入上下文
-你将收到一段 user message JSON：
+字段含义如下：
 - current_time: 当前时间，用于解析 yesterday、last 7 days 等相对时间。
 - user_query: 用户原始问题。
 - conversation_context: 最近多轮对话摘要，只保留和当前问题有关的信息。
@@ -1140,7 +1157,7 @@ System prompt：
 - phase_scope: 当前 PRD 阶段支持的 intent 范围。
 
 ## 总规则
-① 只基于输入上下文做判断，不假设未提供的 account、campaign、app、metric、MMP 或权限。
+① 只基于「运行时输入」中的变量做判断，不假设未提供的 account、campaign、app、metric、MMP 或权限。
 ② 只返回 JSON object，不回答业务问题，不生成诊断结论，不生成客户可见回复。
 ③ 只输出候选工具约束，不实际调用工具，不编造工具结果。
 ④ 若字段缺失，输出 missing_fields 和 clarification_question，不要用 few-shot 或历史上下文里的实体补齐。
@@ -1295,24 +1312,28 @@ System prompt：
   "requires_human_review": true,
   "clarification_question": "string"
 }
-```
+````
 
-User prompt JSON 模板：
+运行时输入变量模板：
+
+该模板已经嵌入上方 system prompt 的「运行时输入」段落中。实现时由 Prompt 渲染层将每个占位符替换为 JSON fragment，其中字符串字段用 `JSON.stringify(string)` 生成，数组和对象字段用 `JSON.stringify(object, null, 2)` 生成，避免中英文混排、换行或对象嵌套造成 Prompt 拼接错误。
 
 ```json
 {
-  "current_time": "{{current_time}}",
-  "user_query": "{{user_query}}",
-  "conversation_context": {{conversation_context}},
-  "user_profile": {{user_profile}},
-  "permission_scope": {{permission_scope}},
-  "available_tools": {{available_tools}},
-  "phase_scope": [
-    "campaign_performance_diagnosis",
-    "attribution_discrepancy_check",
-    "knowledge_lookup"
-  ]
+  "current_time": {{current_time_json}},
+  "user_query": {{user_query_json}},
+  "conversation_context": {{conversation_context_json}},
+  "user_profile": {{user_profile_json}},
+  "permission_scope": {{permission_scope_json}},
+  "available_tools": {{available_tools_json}},
+  "phase_scope": {{phase_scope_json}}
 }
+```
+
+User prompt 固定文案：
+
+```text
+请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
 ```
 
 #### 7.1.6.6 Few-shot 示例
@@ -2769,7 +2790,7 @@ Rerank 成本：
 
 | PRD 设计项 | 验证脚本覆盖方式 | 对齐状态 |
 | --- | --- | --- |
-| Prompt 原文 | `7.1.6.5` 保存 routing system prompt 基线版本，`7.1.6.6` 保存完整 few-shot；验证脚本中的 `routingSystemPrompt` 应与这两节同步更新 | 已对齐 |
+| Prompt 原文 | `7.1.6.5` 保存 routing prompt template 基线版本，`7.1.6.6` 保存完整 few-shot；验证脚本中的 `routingPromptTemplate` 与 `buildRoutingSystemPrompt()` 应与这两节同步更新 | 已对齐 |
 | 总控 Prompt 变量 | 脚本传入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools`、`phase_scope` | 已对齐 |
 | 意图定义与边界 | Prompt 明确每个 intent 的定义、适用场景、不适用场景、必填实体、常见工具和默认风险，不只依赖 intent 名称 | 已对齐 |
 | 意图枚举 | 覆盖 `campaign_performance_diagnosis`、`attribution_discrepancy_check`、`knowledge_lookup`、范围外和 `unknown` 的路由边界 | 已对齐 |

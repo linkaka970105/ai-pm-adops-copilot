@@ -90,18 +90,33 @@ const availableTools = [
   },
 ];
 
-const routingSystemPrompt = `# AdOps Copilot 总控路由器
+const routingPromptTemplate = `# AdOps Copilot 总控路由器
 
 ━━━━━━━━
 ## 需求
-：输入 一段 user message JSON，包含用户问题、会话上下文、用户画像、权限范围、可用工具和当前 PRD 阶段范围
+：输入 下方「运行时输入」JSON，包含用户问题、会话上下文、用户画像、权限范围、可用工具和当前 PRD 阶段范围
 ：输出 一个严格 JSON object，用于后续 workflow dispatcher；不得输出 Markdown、解释文字或业务答案
 
 ## 角色
 你是内部 AdOps Copilot 投放归因排障助手的总控路由器。你的工作不是回答业务问题，而是把用户自然语言问题转成可校验的结构化路由结果。
 
+## 运行时输入
+以下 JSON 由系统在每次调用前填入。你必须只基于本段变量做判断，不得从 few-shot 示例、历史默认值或常识中补齐当前请求实体。
+
+\`\`\`json
+{
+  "current_time": {{current_time_json}},
+  "user_query": {{user_query_json}},
+  "conversation_context": {{conversation_context_json}},
+  "user_profile": {{user_profile_json}},
+  "permission_scope": {{permission_scope_json}},
+  "available_tools": {{available_tools_json}},
+  "phase_scope": {{phase_scope_json}}
+}
+\`\`\`
+
 ## 输入上下文
-你将收到一段 user message JSON：
+字段含义如下：
 - current_time: 当前时间，用于解析 yesterday、last 7 days 等相对时间。
 - user_query: 用户原始问题。
 - conversation_context: 最近多轮对话摘要，只保留和当前问题有关的信息。
@@ -111,7 +126,7 @@ const routingSystemPrompt = `# AdOps Copilot 总控路由器
 - phase_scope: 当前 PRD 阶段支持的 intent 范围。
 
 ## 总规则
-① 只基于输入上下文做判断，不假设未提供的 account、campaign、app、metric、MMP 或权限。
+① 只基于「运行时输入」中的变量做判断，不假设未提供的 account、campaign、app、metric、MMP 或权限。
 ② 只返回 JSON object，不回答业务问题，不生成诊断结论，不生成客户可见回复。
 ③ 只输出候选工具约束，不实际调用工具，不编造工具结果。
 ④ 若字段缺失，输出 missing_fields 和 clarification_question，不要用 few-shot 或历史上下文里的实体补齐。
@@ -287,16 +302,36 @@ Few-shot 4:
 输出:
 {"intent":"attribution_discrepancy_check","language":"zh","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["campaign_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact","evidence_missing"],"risk_level_model_reported":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.6,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence_model_reported":0.9,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]}],"next_action":"ask_clarification","requires_human_review":true,"clarification_question":"请补充要核对的 campaign_id 或 app_id，以及对应账户范围。"} `;
 
-function buildRoutingUserPrompt(testCase) {
-  return JSON.stringify({
+function buildRoutingInput(testCase) {
+  return {
     current_time: "2025-02-15T10:00:00Z",
     user_query: testCase.user_query,
-    conversation_context: [],
+    conversation_context: testCase.conversation_context || [],
     user_profile: testCase.user_profile,
     permission_scope: testCase.permission_scope,
     available_tools: availableTools,
     phase_scope: ["campaign_performance_diagnosis", "attribution_discrepancy_check", "knowledge_lookup"],
-  }, null, 2);
+  };
+}
+
+function jsonFragment(value) {
+  return JSON.stringify(value, null, 2);
+}
+
+function buildRoutingSystemPrompt(testCase) {
+  const input = buildRoutingInput(testCase);
+  return routingPromptTemplate
+    .replaceAll("{{current_time_json}}", jsonFragment(input.current_time))
+    .replaceAll("{{user_query_json}}", jsonFragment(input.user_query))
+    .replaceAll("{{conversation_context_json}}", jsonFragment(input.conversation_context))
+    .replaceAll("{{user_profile_json}}", jsonFragment(input.user_profile))
+    .replaceAll("{{permission_scope_json}}", jsonFragment(input.permission_scope))
+    .replaceAll("{{available_tools_json}}", jsonFragment(input.available_tools))
+    .replaceAll("{{phase_scope_json}}", jsonFragment(input.phase_scope));
+}
+
+function buildRoutingUserPrompt() {
+  return "请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。";
 }
 
 function getRequiredEntities(intent) {
@@ -668,7 +703,7 @@ async function main() {
   const routingResults = [];
   for (const testCase of routingCases) {
     const result = await chatJson(headers, [
-      { role: "system", content: routingSystemPrompt },
+      { role: "system", content: buildRoutingSystemPrompt(testCase) },
       { role: "user", content: buildRoutingUserPrompt(testCase) },
     ], testCase.id);
     const routing = normalizeRouting(result.json, testCase);
