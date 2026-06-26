@@ -240,11 +240,11 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 ## 5.1 端到端业务流程
 
-![投放归因排障端到端业务流程图](assets/adops_attribution_workflow.svg)
+![投放归因排障端到端业务流程图](assets/gpt_image/adops_attribution_workflow_gpt_image_2.png)
 
 泳道图用于补充说明端到端流程中不同角色、智能体、RAG/数据工具和知识运营后台之间的职责分工。场景智能体负责拆解排查步骤、判断需要哪些证据并组织诊断结论；RAG、报表工具、MMP/postback 工具属于信息供给层，由场景智能体按需调用，用于补充上下文和形成证据对象。正常在线业务链路中，Judge AI 不接在场景智能体后逐次拦截回答；它主要用于离线评测、灰度回归、Badcase 复盘和模型/Prompt 版本对比。
 
-![投放归因排障端到端泳道图](assets/adops_attribution_swimlane.svg)
+![投放归因排障端到端泳道图](assets/gpt_image/adops_attribution_swimlane_gpt_image_2.png)
 
 ```text
 问题输入
@@ -285,7 +285,7 @@ ROI 计算不在 PRD 中预设真实业务结果。上线前需要先采集 2-4 
 
 以下案例用于说明系统不是只做“问答”，而是完成从用户提问、权限路由、工具查询、证据卡生成、诊断输出到人工确认的完整闭环。
 
-![投放归因排障真实案例流程图](assets/adops_attribution_case_flow.svg)
+![投放归因排障真实案例流程图](assets/gpt_image/adops_attribution_case_flow_gpt_image_2.png)
 
 | 步骤 | 用户/系统动作 | 关键输入输出 | 产品约束 |
 | --- | --- | --- | --- |
@@ -517,7 +517,7 @@ AI 产品落地需要把“产品写 Prompt”拆成可协作的工程对象：P
 
 ## 5.4 系统架构
 
-![投放归因排障系统架构图](assets/adops_attribution_architecture.svg)
+![投放归因排障系统架构图](assets/gpt_image/adops_attribution_architecture_gpt_image_2.png)
 
 ```text
 [英文业务前台]
@@ -558,7 +558,7 @@ AI 产品落地需要把“产品写 Prompt”拆成可协作的工程对象：P
 
 ## 5.5 智能体状态机
 
-![投放归因排障智能体状态机图](assets/adops_attribution_state_machine.svg)
+![投放归因排障智能体状态机图](assets/gpt_image/adops_attribution_state_machine_gpt_image_2.png)
 
 | 状态 | 说明 | 下一状态 |
 | --- | --- | --- |
