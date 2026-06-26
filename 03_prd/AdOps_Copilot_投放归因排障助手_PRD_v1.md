@@ -2391,7 +2391,7 @@ confidence =
 | 项目 | 当前阶段目标 |
 | --- | --- |
 | Copilot 首次响应 | P50 小于 3 秒，P95 小于 8 秒，复杂工具链可流式展示进度 |
-| 单轮诊断成本 | 按模型、检索、工具调用、缓存命中拆分计量，不在 PRD 中预设固定金额 |
+| 单轮诊断成本 | 按模型、检索、工具调用、缓存命中拆分计量；PRD 提供估算口径，线上以价格配置表和 Trace 复算 |
 | 模型升级比例 | 默认轻量模型处理，复杂任务升级比例受看板监控 |
 | 工具超时 | 关键工具超时后输出失败原因和人工处理入口 |
 | Trace 完整性 | 会话、模型、Prompt、工具、证据、用户反馈全链路可追踪 |
@@ -2420,7 +2420,52 @@ confidence =
 | 安全交付 | 诊断草稿、证据映射、禁止项 | 只检查关键事实和敏感输出，不重复全量推理 |
 | Judge AI | 离线样本、输出、证据、评分标准 | 不进入每次在线链路，按抽样和灰度批量运行 |
 
-### 15.3.2 降本策略
+### 15.3.2 成本估算假设与示例测算
+
+成本估算用于判断 MVP 是否具备规模化可行性，不作为采购报价。上线时必须把供应商、模型、价格版本、汇率、缓存折扣和合同折扣写入 `price_config`，由 Trace 按实际 token 和调用量复算。
+
+价格口径：
+
+| 类别 | 国内模型估算口径 | 海外模型估算口径 |
+| --- | --- | --- |
+| 路由与安全检查 | DeepSeek-chat，按缓存未命中输入 ¥2 / 1M tokens、输出 ¥8 / 1M tokens 估算 | GPT-4o mini，按 $0.15 / 1M 输入、$0.60 / 1M 输出估算 |
+| 知识查询生成 | DeepSeek-chat | GPT-4o mini，按 $0.15 / 1M 输入、$0.60 / 1M 输出估算 |
+| 标准诊断生成 | DeepSeek-chat | GPT-4o，按 $5 / 1M 输入、$15 / 1M 输出估算 |
+| 复杂归因升级 | DeepSeek-reasoner，按缓存未命中输入 ¥4 / 1M tokens、输出 ¥16 / 1M tokens 估算 | GPT-4o 追加一次复杂证据复核 |
+| Embedding 查询 | Alibaba `text-embedding-v4` 中国大陆价格 $0.072 / 1M tokens，按 1 USD = 7.2 RMB 折算为约 ¥0.52 / 1M tokens | OpenAI `text-embedding-3-large`，按 $0.13 / 1M tokens 估算 |
+| Rerank | Alibaba `gte-rerank-v2` 中国大陆价格 $0.115 / 1M tokens，折算为约 ¥0.83 / 1M tokens | Cohere Rerank 3.5 / Pinecone 集成，按 $2 / 1K requests 估算 |
+| 汇率 | 1 USD = 7.2 RMB，仅用于测算 | 实际财务结算以采购和财务口径为准 |
+
+参考来源：[DeepSeek API 价格](https://api-docs.deepseek.com/quick_start/pricing-details-cny)、[Alibaba Cloud Model Studio 价格](https://www.alibabacloud.com/help/en/model-studio/model-pricing)、[OpenAI GPT-4o mini 发布价格](https://openai.com/index/gpt-4o-mini-advancing-cost-efficient-intelligence/)、[OpenAI embedding 价格](https://openai.com/index/new-embedding-models-and-api-updates/)、[Pinecone rerank 价格](https://www.pinecone.io/pricing/)。GPT-4o 强模型价格采用 2025 年初常见公开价格口径，正式上线前需以 OpenAI 当期 API pricing、云厂商价格或企业合同价复核。
+
+单次会话 token 与调用量假设：
+
+| 场景 | 流量占比假设 | 调用链路 | Token / 调用量假设 |
+| --- | ---: | --- | --- |
+| 纯知识查询 | 35% | 总控路由 + Embedding + Rerank + 知识回答 + 安全检查 | 路由 1.2K 输入 / 0.2K 输出；Embedding 0.2K；Rerank 约 10.1K 文档 token 或 1 次 rerank 请求；回答 3.5K 输入 / 0.8K 输出；安全检查 0.8K 输入 / 0.1K 输出 |
+| 标准投放/归因排障 | 55% | 总控路由 + RAG + 场景诊断 + 安全检查 | 路由 1.5K / 0.25K；Embedding 0.25K；Rerank 约 10.25K 或 1 次；诊断 7K / 1.2K；安全检查 1.2K / 0.2K |
+| 复杂归因排障 | 10% | 总控路由 + RAG + 场景诊断 + 复杂证据复核 + 安全检查 | 路由 1.5K / 0.25K；Embedding 0.25K；Rerank 约 15.25K 或 1 次；诊断 10K / 1.8K；复杂复核 4K / 0.8K；安全检查 1.5K / 0.3K |
+
+示例测算结果：
+
+| 场景 | 国内模型单次成本 | 海外模型单次成本 | 说明 |
+| --- | ---: | ---: | --- |
+| 纯知识查询 | 约 ¥0.028 | 约 $0.0035，折合约 ¥0.025 | 海外轻量模型在纯知识问答上成本不高，但仍受合规和数据出境限制 |
+| 标准投放/归因排障 | 约 ¥0.041 | 约 $0.0557，折合约 ¥0.40 | 海外方案主要成本来自强模型诊断生成 |
+| 复杂归因排障 | 约 ¥0.086 | 约 $0.1118，折合约 ¥0.81 | 复杂证据复核和长上下文会显著抬高成本 |
+| 加权平均 | 约 ¥0.041 / 会话 | 约 $0.043 / 会话，折合约 ¥0.31 / 会话 | 按 35% 纯知识、55% 标准排障、10% 复杂排障估算 |
+| 1 万次会话 | 约 ¥412 | 约 $430，折合约 ¥3,100 | 不含向量库存储、报表 API、人工复核和离线评测批处理 |
+| 10 万次会话 | 约 ¥4,122 | 约 $4,305，折合约 ¥31,000 | 建议预算再预留 20%-30% 波动 buffer |
+
+测算结论：
+
+1. 国内模型方案的在线推理成本明显更可控，更符合当前企业主体、合规和预算约束。
+2. 海外模型在英文复杂表达上可作为评测对照或灰度兜底，但不适合在未解决合规和成本前作为默认在线链路。
+3. 成本差异主要来自标准/复杂排障中的强模型诊断，而不是纯知识查询。
+4. 若纯知识查询占比升高，平均成本会下降；若复杂归因排障和多轮追问占比升高，平均成本会上升。
+5. 线上必须按 `workflow_type`、`model_name`、`prompt_version`、`input_tokens`、`output_tokens`、`cached_input_tokens`、`rerank_requests`、`embedding_tokens`、`tool_retry_count` 和 `price_config_version` 记录成本，避免只能用估算回答业务 ROI。
+
+### 15.3.3 降本策略
 
 | 策略 | 适用位置 | 预期作用 | 风险控制 |
 | --- | --- | --- | --- |
@@ -2431,7 +2476,7 @@ confidence =
 | Prompt 拆分 | 路由、诊断、交付、安全检查分阶段执行 | 避免每轮都调用大 Prompt | 阶段间必须有 schema 校验 |
 | 离线评测批处理 | Judge AI 和回归评测离线运行 | 避免在线链路成本和延迟过高 | 高风险场景仍需规则实时拦截 |
 
-### 15.3.3 成本告警
+### 15.3.4 成本告警
 
 | 告警 | 触发条件 | 处理动作 |
 | --- | --- | --- |
