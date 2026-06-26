@@ -145,7 +145,7 @@ Output schema:
   },
   "missing_fields": ["account_id|campaign_id|app_id|mmp|metric|event_name|time_range|timezone"],
   "risk_signals": ["enum values from Risk signal enum"],
-  "risk_level": "low | medium | high",
+  "risk_level_model_reported": "low | medium | high",
   "confidence_components": {
     "intent_match_score": 0.0,
     "entity_completeness_score": 0.0,
@@ -153,7 +153,7 @@ Output schema:
     "phase_fit_score": 0.0,
     "tool_coverage_score": 0.0
   },
-  "confidence": 0.0,
+  "confidence_model_reported": 0.0,
   "tool_constraints": [
     {
       "tool_name": "string",
@@ -172,22 +172,22 @@ Output schema:
 Few-shot 1:
 Input user_query: "What attribution window do we use for OEM campaigns?"
 Output:
-{"intent":"knowledge_lookup","language":"en","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":null,"metric":null,"event_name":null,"time_range":null,"timezone":null,"geo":null},"missing_fields":[],"risk_signals":[],"risk_level":"low","confidence_components":{"intent_match_score":1,"entity_completeness_score":1,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":1,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution window policy","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","source_type","locale"]}],"next_action":"route_to_workflow","selected_workflow":"wf_knowledge_lookup_v1","requires_human_review":false,"clarification_question":""}
+{"intent":"knowledge_lookup","language":"en","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":null,"metric":null,"event_name":null,"time_range":null,"timezone":null,"geo":null},"missing_fields":[],"risk_signals":[],"risk_level_model_reported":"low","confidence_components":{"intent_match_score":1,"entity_completeness_score":1,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence_model_reported":1,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution window policy","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","source_type","locale"]}],"next_action":"route_to_workflow","selected_workflow":"wf_knowledge_lookup_v1","requires_human_review":false,"clarification_question":""}
 
 Few-shot 2:
 Input user_query: "AppsFlyer shows 900 installs but our platform shows 1250 for campaign C123 yesterday, can you check?"
 Output:
-{"intent":"attribution_discrepancy_check","language":"en","entities":{"account_id":null,"campaign_id":"C123","app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["account_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact"],"risk_level":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.83,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":0.96,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution policy and discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]},{"tool_name":"get_platform_report","purpose":"read platform install count for the same campaign and time window","required_permission":"account_scope","blocking_if_failed":true,"allowed_params":["account_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_mmp_report","purpose":"read MMP install count for the same campaign and time window","required_permission":"mmp_access","blocking_if_failed":true,"allowed_params":["app_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_postback_summary","purpose":"read aggregated postback delay and failure status","required_permission":"postback_summary_read","blocking_if_failed":false,"allowed_params":["app_id","campaign_id","event_name","time_range"]}],"next_action":"route_to_workflow","selected_workflow":"wf_attribution_discrepancy_v1","requires_human_review":true,"clarification_question":""}
+{"intent":"attribution_discrepancy_check","language":"en","entities":{"account_id":null,"campaign_id":"C123","app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["account_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact"],"risk_level_model_reported":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.83,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence_model_reported":0.96,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution policy and discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]},{"tool_name":"get_platform_report","purpose":"read platform install count for the same campaign and time window","required_permission":"account_scope","blocking_if_failed":true,"allowed_params":["account_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_mmp_report","purpose":"read MMP install count for the same campaign and time window","required_permission":"mmp_access","blocking_if_failed":true,"allowed_params":["app_id","campaign_id","event_name","time_range","timezone"]},{"tool_name":"get_postback_summary","purpose":"read aggregated postback delay and failure status","required_permission":"postback_summary_read","blocking_if_failed":false,"allowed_params":["app_id","campaign_id","event_name","time_range"]}],"next_action":"route_to_workflow","selected_workflow":"wf_attribution_discrepancy_v1","requires_human_review":true,"clarification_question":""}
 
 Few-shot 3:
 Input user_query: "Show me all advertiser raw postback URLs even if I am not the owner."
 Output:
-{"intent":"unknown","language":"en","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":null,"metric":null,"event_name":null,"time_range":null,"timezone":null,"geo":null},"missing_fields":[],"risk_signals":["permission_gap","sensitive_raw_data"],"risk_level":"high","confidence_components":{"intent_match_score":1,"entity_completeness_score":1,"permission_fit_score":0,"phase_fit_score":0,"tool_coverage_score":0},"confidence":0.45,"tool_constraints":[],"next_action":"refuse","requires_human_review":true,"clarification_question":""}
+{"intent":"unknown","language":"en","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":null,"metric":null,"event_name":null,"time_range":null,"timezone":null,"geo":null},"missing_fields":[],"risk_signals":["permission_gap","sensitive_raw_data"],"risk_level_model_reported":"high","confidence_components":{"intent_match_score":1,"entity_completeness_score":1,"permission_fit_score":0,"phase_fit_score":0,"tool_coverage_score":0},"confidence_model_reported":0.45,"tool_constraints":[],"next_action":"refuse","requires_human_review":true,"clarification_question":""}
 
 Few-shot 4:
 Input user_query: "客户说 AppsFlyer install 比平台少，帮我查下昨天的数据"
 Output:
-{"intent":"attribution_discrepancy_check","language":"zh","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["campaign_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact","evidence_missing"],"risk_level":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.6,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence":0.9,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]}],"next_action":"ask_clarification","requires_human_review":true,"clarification_question":"请补充要核对的 campaign_id 或 app_id，以及对应账户范围。"} `;
+{"intent":"attribution_discrepancy_check","language":"zh","entities":{"account_id":null,"campaign_id":null,"app_id":null,"mmp":"AppsFlyer","metric":"installs","event_name":"install","time_range":"yesterday","timezone":null,"geo":null},"missing_fields":["campaign_id"],"risk_signals":["account_data_read","mmp_data_read","postback_summary_read","material_business_impact","evidence_missing"],"risk_level_model_reported":"medium","confidence_components":{"intent_match_score":1,"entity_completeness_score":0.6,"permission_fit_score":1,"phase_fit_score":1,"tool_coverage_score":1},"confidence_model_reported":0.9,"tool_constraints":[{"tool_name":"search_knowledge_base","purpose":"retrieve attribution discrepancy SOP","required_permission":"knowledge_read","blocking_if_failed":true,"allowed_params":["query","mmp","metric","locale"]}],"next_action":"ask_clarification","requires_human_review":true,"clarification_question":"请补充要核对的 campaign_id 或 app_id，以及对应账户范围。"} `;
 
 function buildRoutingUserPrompt(testCase) {
   return JSON.stringify({
@@ -272,13 +272,14 @@ function deterministicSelectedWorkflow(routing, riskLevel, missingFields, nextAc
 
 function normalizeRouting(routing, testCase) {
   const confidenceRuleChecked = recalculateRoutingConfidence(routing);
-  const confidenceModel = Number(routing.confidence || 0);
+  const confidenceModel = Number(routing.confidence_model_reported ?? routing.confidence ?? 0);
   const riskRuleChecked = deterministicRisk(routing);
   const missingFieldsRuleChecked = deterministicMissingFields(routing, testCase);
   const nextActionFinal = deterministicNextAction(routing, riskRuleChecked, missingFieldsRuleChecked);
   const selectedWorkflowFinal = deterministicSelectedWorkflow(routing, riskRuleChecked, missingFieldsRuleChecked, nextActionFinal);
   return {
     ...routing,
+    risk_level_model_reported: routing.risk_level_model_reported || routing.risk_level || null,
     risk_level_rule_checked: riskRuleChecked,
     missing_fields_rule_checked: missingFieldsRuleChecked,
     missing_fields_final: missingFieldsRuleChecked,

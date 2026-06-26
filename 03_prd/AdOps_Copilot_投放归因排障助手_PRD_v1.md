@@ -2572,6 +2572,19 @@ Rerank 成本：
 
 本测试不是为了证明 `gpt-5.5` 是生产选型，而是为了验证 prompt、schema、risk/confidence 规则和 workflow 边界是否可以被程序化回归。生产环境仍按第 8 节优先评估 Qwen、DeepSeek、GLM 等中国厂商模型。
 
+验证脚本与 PRD Prompt 的对齐关系：
+
+| PRD 设计项 | 验证脚本覆盖方式 | 对齐状态 |
+| --- | --- | --- |
+| 总控 Prompt 变量 | 脚本传入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools`、`phase_scope` | 已对齐 |
+| 意图枚举 | 覆盖 `campaign_performance_diagnosis`、`attribution_discrepancy_check`、`knowledge_lookup`、范围外和 `unknown` 的路由边界 | 已对齐 |
+| 风险信号 | 使用 PRD 风险信号枚举，包含 `account_data_read`、`mmp_data_read`、`postback_summary_read`、`permission_gap`、`sensitive_raw_data`、`customer_visible_reply` 等 | 已对齐 |
+| 模型自报风险 | 脚本要求模型输出 `risk_level_model_reported`，但最终断言使用规则层复算的 `risk_level_rule_checked` / `risk_level_final` | 已对齐 |
+| 置信度 | 脚本要求模型输出 `confidence_components` 和 `confidence_model_reported`，并按 PRD 公式复算 `confidence_final` | 已对齐 |
+| Workflow 分流 | 脚本对 `selected_workflow` 做规则复算，验证知识查询进入 `wf_knowledge_lookup_v1`、归因核对进入 `wf_attribution_discrepancy_v1`、缺字段进入 `wf_clarification_v1`、越权进入 `wf_refusal_v1` | 已对齐 |
+| 归因核对 Prompt | 脚本要求输出固定检查项：timezone、attribution_window、event_mapping、postback_delay、dedup_or_reattribution、privacy_or_invalid_traffic、channel_mapping、data_freshness | 已对齐 |
+| Evidence Object | 诊断断言要求输出引用 `ev_metric_001`、`ev_policy_001`，关键结论必须绑定 evidence_id | 已对齐 |
+
 最新测试中的关键发现：
 
 1. 缺少 `risk_level` 评判标准时，模型可能把“客户反馈问题”误判为“客户可见回复”，导致不必要的 high risk。Prompt 已补充规则：提到客户反馈不等于请求外部回复。
