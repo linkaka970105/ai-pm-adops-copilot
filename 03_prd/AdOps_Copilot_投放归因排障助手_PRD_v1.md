@@ -879,18 +879,6 @@ RAG citation 不直接给用户展示原始 chunk，而是转成 evidence object
 
 本章每个独立需求都包含对应的输入输出、Prompt 设计、技术选型和验收方式。Prompt 的共性约束为：系统约束、任务说明、业务上下文、工具结果和输出 schema 分离维护；关键结论必须绑定 `evidence_id`；缺少证据时只能追问或输出待确认项；每次调用必须记录 `prompt_id`、`prompt_version`、`model`、`temperature` 和 Trace ID。
 
-## 7.0 Prompt 调用与变量来源统一约定
-
-本章所有 Prompt 模板默认把运行时变量填入 `system prompt` 的「运行时输入」JSON 块。变量必须由 workflow、工具网关、RAG 服务或评测平台生成，不能由模型自己补齐。
-
-固定 `user prompt` 不是业务 Prompt 的核心内容，只是兼容 Chat Completions 这类接口时的短触发语句。生产环境如果使用 `response_format=json_schema`、function calling 或内部 Prompt Runner，可省略固定 `user prompt`，直接通过 system prompt 和 JSON schema 约束输出。当前 E2E 脚本仍保留统一短句，目的是降低本地模型测试时的非 JSON 输出概率。
-
-统一短句如下：
-
-```text
-请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。
-```
-
 ## 7.1 需求 0：总控智能体与权限路由
 
 ### 7.1.1 背景
@@ -1136,10 +1124,7 @@ confidence_final =
 
 本节为当前验证脚本 `routingPromptTemplate` 与 `buildRoutingSystemPrompt()` 的 PRD 基线版本。为了便于内部评审、面试复盘和后续维护，Prompt 主体使用中文描述业务规则；`intent`、`risk_signals`、字段名、枚举值和 JSON schema 保持英文，避免研发实现时出现字段歧义。
 
-系统实际调用时由两部分组成：
-
-1. system prompt：使用下方中文总控 Prompt 模板，并在「运行时输入」段落中填入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools` 和 `phase_scope`。
-2. user prompt：生产环境如果使用 JSON mode / function calling，可省略固定 user prompt；本地 E2E 仅保留第 7.0 的统一短句作为 chat-completion 兼容层。
+系统实际调用时使用下方中文总控 Prompt 模板，并在「运行时输入」段落中填入 `current_time`、`user_query`、`conversation_context`、`user_profile`、`permission_scope`、`available_tools` 和 `phase_scope`。
 
 设计理由：变量插槽必须出现在 Prompt 模板正文中，而不是只在文档里解释字段含义。否则研发实现时容易把字段说明和真实输入拆开，导致模型无法稳定知道当前 query、权限、工具和阶段范围。
 
@@ -3292,7 +3277,7 @@ Rerank 成本：
 | 归因核对 Prompt 变量 | 脚本使用 `diagnosisPromptTemplate` 与 `buildDiagnosisSystemPrompt()`，将 `trace_context`、`routing_result`、`user_query`、`platform_report`、`mmp_report`、`postback_status`、`attribution_policy_context`、`event_mapping`、`evidence_objects`、`business_rules` 渲染进 system prompt 的「运行时输入」 | 已对齐 |
 | 归因核对 Prompt 输出 | 脚本要求输出固定检查项：timezone、attribution_window、event_mapping、postback_delay、dedup_or_reattribution、privacy_or_invalid_traffic、channel_mapping、data_freshness，并断言 event_mapping 状态不缺失；模型不得输出 `confidence` / `confidence_final`，由脚本规则层回写 `confidence_final_rule_checked` | 已对齐 |
 | Evidence Object | 诊断断言要求输出引用 `ev_metric_001`、`ev_policy_001`，关键结论必须绑定 evidence_id | 已对齐 |
-| 投放诊断 / 知识查询 / Judge AI Prompt | PRD 已统一为运行时变量插槽、变量来源表和输出 schema；固定 user prompt 已收敛为第 7.0 的可选兼容层；当前脚本尚未覆盖这三类 prompt 的模型回归 | 待扩展验证 |
+| 投放诊断 / 知识查询 / Judge AI Prompt | PRD 已统一为运行时变量插槽、变量来源表和输出 schema；当前脚本尚未覆盖这三类 prompt 的模型回归 | 待扩展验证 |
 
 最新测试中的关键发现：
 

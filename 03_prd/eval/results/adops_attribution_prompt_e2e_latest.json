@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-06-26T09:20:20.511Z",
+  "generated_at": "2026-06-26T09:40:34.820Z",
   "endpoint": "http://127.0.0.1:8317/v1",
   "model": "gpt-5.5",
   "model_available": true,
@@ -63,17 +63,17 @@
         "confidence_needs_normalization": false
       },
       "usage": {
-        "completion_tokens": 304,
-        "total_tokens": 4959,
-        "prompt_tokens": 4655,
+        "completion_tokens": 261,
+        "total_tokens": 4897,
+        "prompt_tokens": 4636,
         "prompt_tokens_details": {
-          "cached_tokens": 0
+          "cached_tokens": 4352
         },
         "completion_tokens_details": {
-          "reasoning_tokens": 94
+          "reasoning_tokens": 51
         }
       },
-      "elapsedMs": 16605
+      "elapsedMs": 12757
     },
     {
       "id": "route_attribution_with_values",
@@ -148,7 +148,7 @@
           },
           {
             "tool_name": "get_postback_summary",
-            "purpose": "read aggregated postback delay, failure and reject summary for discrepancy diagnosis",
+            "purpose": "read aggregated postback delay, failure and reject status",
             "required_permission": "postback_summary_read",
             "blocking_if_failed": false,
             "allowed_params": [
@@ -178,17 +178,17 @@
         "confidence_needs_normalization": false
       },
       "usage": {
-        "completion_tokens": 780,
-        "total_tokens": 5473,
-        "prompt_tokens": 4693,
+        "completion_tokens": 909,
+        "total_tokens": 5583,
+        "prompt_tokens": 4674,
         "prompt_tokens_details": {
-          "cached_tokens": 0
+          "cached_tokens": 4352
         },
         "completion_tokens_details": {
-          "reasoning_tokens": 383
+          "reasoning_tokens": 515
         }
       },
-      "elapsedMs": 37788
+      "elapsedMs": 35880
     },
     {
       "id": "route_permission_block",
@@ -240,17 +240,17 @@
         "confidence_needs_normalization": false
       },
       "usage": {
-        "completion_tokens": 688,
-        "total_tokens": 5342,
-        "prompt_tokens": 4654,
+        "completion_tokens": 402,
+        "total_tokens": 5037,
+        "prompt_tokens": 4635,
         "prompt_tokens_details": {
-          "cached_tokens": 0
+          "cached_tokens": 4352
         },
         "completion_tokens_details": {
-          "reasoning_tokens": 516
+          "reasoning_tokens": 230
         }
       },
-      "elapsedMs": 30428
+      "elapsedMs": 19334
     },
     {
       "id": "route_missing_campaign",
@@ -271,8 +271,7 @@
         "missing_fields": [
           "account_id",
           "campaign_id",
-          "app_id",
-          "timezone"
+          "app_id"
         ],
         "risk_signals": [
           "account_data_read",
@@ -293,7 +292,7 @@
         "tool_constraints": [
           {
             "tool_name": "search_knowledge_base",
-            "purpose": "retrieve attribution policy and discrepancy SOP",
+            "purpose": "retrieve attribution discrepancy SOP and AppsFlyer install definition",
             "required_permission": "knowledge_read",
             "blocking_if_failed": true,
             "allowed_params": [
@@ -305,7 +304,7 @@
           },
           {
             "tool_name": "get_platform_report",
-            "purpose": "read platform install count for the same account, campaign or app, and time window",
+            "purpose": "read platform install count for the same account/app or campaign and time window",
             "required_permission": "account_scope",
             "blocking_if_failed": true,
             "allowed_params": [
@@ -339,27 +338,24 @@
               "app_id",
               "campaign_id",
               "event_name",
-              "time_range",
-              "timezone"
+              "time_range"
             ]
           }
         ],
         "next_action": "ask_clarification",
         "selected_workflow": "wf_clarification_v1",
         "requires_human_review": true,
-        "clarification_question": "请补充要核对的 account_id，以及 campaign_id 或 app_id；如果有指定报表时区也请一并提供。",
+        "clarification_question": "请补充要核对的 account_id，以及 campaign_id 或 app_id；如有指定时区也请一并提供。",
         "risk_level_rule_checked": "medium",
         "missing_fields_rule_checked": [
           "account_id",
           "campaign_id",
-          "app_id",
-          "timezone"
+          "app_id"
         ],
         "missing_fields_final": [
           "account_id",
           "campaign_id",
-          "app_id",
-          "timezone"
+          "app_id"
         ],
         "next_action_model_reported": "ask_clarification",
         "next_action_final": "ask_clarification",
@@ -373,17 +369,17 @@
         "confidence_needs_normalization": false
       },
       "usage": {
-        "completion_tokens": 972,
-        "total_tokens": 5648,
-        "prompt_tokens": 4676,
+        "completion_tokens": 968,
+        "total_tokens": 5625,
+        "prompt_tokens": 4657,
         "prompt_tokens_details": {
-          "cached_tokens": 0
+          "cached_tokens": 4352
         },
         "completion_tokens_details": {
           "reasoning_tokens": 516
         }
       },
-      "elapsedMs": 39431
+      "elapsedMs": 41643
     },
     {
       "id": "route_operation_change",
@@ -404,7 +400,8 @@
         "missing_fields": [],
         "risk_signals": [
           "operational_change",
-          "material_business_impact"
+          "material_business_impact",
+          "out_of_scope"
         ],
         "risk_level_model_reported": "high",
         "confidence_components": {
@@ -435,17 +432,17 @@
         "confidence_needs_normalization": false
       },
       "usage": {
-        "completion_tokens": 586,
-        "total_tokens": 5264,
-        "prompt_tokens": 4678,
+        "completion_tokens": 544,
+        "total_tokens": 5203,
+        "prompt_tokens": 4659,
         "prompt_tokens_details": {
-          "cached_tokens": 0
+          "cached_tokens": 4352
         },
         "completion_tokens_details": {
-          "reasoning_tokens": 404
+          "reasoning_tokens": 358
         }
       },
-      "elapsedMs": 28776
+      "elapsedMs": 22526
     },
     {
       "id": "route_billing_contract",
@@ -497,17 +494,17 @@
         "confidence_needs_normalization": false
       },
       "usage": {
-        "completion_tokens": 401,
-        "total_tokens": 5052,
-        "prompt_tokens": 4651,
+        "completion_tokens": 517,
+        "total_tokens": 5149,
+        "prompt_tokens": 4632,
         "prompt_tokens_details": {
           "cached_tokens": 0
         },
         "completion_tokens_details": {
-          "reasoning_tokens": 218
+          "reasoning_tokens": 334
         }
       },
-      "elapsedMs": 22651
+      "elapsedMs": 24881
     }
   ],
   "deterministic_tool_context": {
@@ -597,15 +594,15 @@
       "checked_items": [
         {
           "item": "timezone",
-          "status": "mismatched",
+          "status": "likely_issue",
           "evidence_id": "ev_policy_001",
-          "reason": "Platform report is in UTC while AppsFlyer report is in America/Los_Angeles. Reviewed policy evidence states timezone alignment is a required first check and AppsFlyer may use advertiser app timezone by default."
+          "reason": "Platform report uses UTC while AppsFlyer report uses America/Los_Angeles. Reviewed policy states platform and MMP reports must be compared under the same timezone and AppsFlyer may default to advertiser app timezone."
         },
         {
           "item": "attribution_window",
           "status": "needs_followup",
           "evidence_id": null,
-          "reason": "AppsFlyer report shows attribution window as 7d click / 1d view, but the platform attribution window for the same report is not provided in the evidence."
+          "reason": "AppsFlyer attribution window is available as 7d click / 1d view, but no matching platform attribution-window setting is provided, so alignment cannot be confirmed."
         },
         {
           "item": "event_mapping",
@@ -617,36 +614,36 @@
           "item": "postback_delay",
           "status": "likely_issue",
           "evidence_id": "ev_postback_001",
-          "reason": "Postback summary shows delayed_rate=6.8% and failed_rate=0.8%. Delay may explain part of the install gap, but the evidence does not prove a broad postback outage."
+          "reason": "Postback summary shows delayed_rate=6.8% and failed_rate=0.8%. This may explain part of the gap, but evidence does not support a broad postback outage."
         },
         {
           "item": "dedup_or_reattribution",
           "status": "not_supported_by_evidence",
           "evidence_id": null,
-          "reason": "No evidence was provided about deduplication rules, reattribution rules, or duplicate install handling across platform and AppsFlyer."
+          "reason": "No deduplication, reattribution, reinstall, or unique-user counting evidence is provided."
         },
         {
           "item": "privacy_or_invalid_traffic",
           "status": "not_supported_by_evidence",
           "evidence_id": null,
-          "reason": "No evidence was provided about privacy filtering, invalid traffic filtering, fraud rejection, or related AppsFlyer/platform exclusion counts."
+          "reason": "No privacy filtering, invalid traffic filtering, SKAN/privacy thresholding, or rejection evidence is provided. Postback rejects top reason is none_material."
         },
         {
           "item": "channel_mapping",
           "status": "not_supported_by_evidence",
           "evidence_id": null,
-          "reason": "No evidence was provided about media source, channel, partner, or campaign mapping equivalence beyond campaign_id C123."
+          "reason": "No media source, channel, campaign naming, or partner mapping evidence is provided beyond campaign_id=C123."
         },
         {
           "item": "data_freshness",
           "status": "matched",
           "evidence_id": null,
-          "reason": "Both reports include freshness values: platform data_freshness_minutes=35 and MMP data_freshness_minutes=50. Freshness is known, though the evidence does not establish whether these values are fully synchronized."
+          "reason": "Platform freshness is 35 minutes and MMP freshness is 50 minutes. Freshness is known for both sources, with no evidence that freshness alone explains the 28.0% gap."
         }
       ],
       "likely_reasons": [
         {
-          "reason": "Timezone mismatch between platform UTC reporting and AppsFlyer America/Los_Angeles reporting is the primary likely driver of the 28.0% install difference.",
+          "reason": "Timezone mismatch between platform UTC reporting and AppsFlyer America/Los_Angeles reporting is the primary likely driver and must be normalized before drawing a final conclusion.",
           "rank": 1,
           "evidence_ids": [
             "ev_metric_001",
@@ -654,45 +651,40 @@
           ]
         },
         {
-          "reason": "Postback delay may explain part of the gap because delayed postbacks are present, but available evidence does not support treating this as a broad outage.",
+          "reason": "Postback delay or minor failure may explain part of the discrepancy, but the observed delayed and failed rates do not prove a broad outage.",
           "rank": 2,
           "evidence_ids": [
             "ev_postback_001"
           ]
         },
         {
-          "reason": "Attribution window alignment remains an open follow-up because AppsFlyer window is available but the platform-side attribution window is not present in evidence.",
+          "reason": "Attribution-window alignment remains unverified because only the AppsFlyer window is present in the available evidence.",
           "rank": 3,
           "evidence_ids": []
         }
       ],
       "excluded_reasons": [
         {
-          "reason": "Event-name mapping mismatch",
+          "reason": "Event-name mismatch",
           "evidence_ids": [],
-          "why_excluded": "Event mapping evidence in the runtime input shows install is matched to install, so the available data does not support event mapping mismatch as the cause."
+          "why_excluded": "Provided event mapping indicates platform_event=install and mmp_event=install with status=matched."
         },
         {
-          "reason": "Broad postback outage",
+          "reason": "Material postback outage",
           "evidence_ids": [
             "ev_postback_001"
           ],
-          "why_excluded": "Postback success_rate is 92.4%, failed_rate is 0.8%, and rejects_top_reason is none_material; this supports possible partial delay impact but not a broad outage conclusion."
-        },
-        {
-          "reason": "Data freshness unknown",
-          "evidence_ids": [],
-          "why_excluded": "Both platform and MMP reports include data freshness values, so freshness is not unknown in the provided evidence."
+          "why_excluded": "Postback success_rate is 92.4%, failed_rate is 0.8%, and rejects_top_reason is none_material; evidence supports possible partial delay impact but not a broad outage."
         }
       ],
       "required_followups": [
-        "Rerun platform and AppsFlyer install reports for campaign C123 on 2025-02-14 using the same timezone before drawing a final conclusion.",
-        "Confirm whether the aligned timezone should be UTC or the advertiser app timezone used by AppsFlyer.",
-        "Validate AppsFlyer raw or detailed aggregate export after timezone alignment to confirm whether the 900 install count persists.",
-        "Confirm the platform-side attribution window and compare it with AppsFlyer 7d click / 1d view.",
-        "Review aggregate postback delay and failure distribution by hour for the same campaign and event, without using device-level logs or raw postback URLs.",
-        "Verify campaign/channel/media-source mapping for C123 across platform and AppsFlyer.",
-        "Check whether deduplication, reattribution, privacy filtering, or invalid-traffic filtering rules differ between the two reporting sources."
+        "Rerun platform and AppsFlyer reports for campaign C123 and event install using the same timezone, preferably both UTC and AppsFlyer app timezone for comparison.",
+        "Confirm the platform-side attribution window or reporting inclusion logic and compare it with AppsFlyer 7d click / 1d view.",
+        "After timezone normalization, recheck whether the 28.0% difference remains above the 20% materiality threshold.",
+        "Review aggregated deduplication, reinstall, and reattribution settings or summary counts if the normalized gap remains material.",
+        "Validate aggregated channel or media-source mapping for campaign C123 if the normalized gap remains material.",
+        "Check aggregated invalid traffic, privacy filtering, or rejected install summaries if available; do not request device-level logs or raw postback URLs.",
+        "Re-run both reports after sufficient freshness convergence if operationally required."
       ],
       "confidence_rule_inputs": {
         "has_platform_report": true,
@@ -704,22 +696,22 @@
         "has_core_data_conflict": false,
         "freshness_unknown": false
       },
-      "internal_explanation_summary": "Platform installs are 1250 and AppsFlyer installs are 900 for campaign C123 on 2025-02-14, producing a 28.0% difference. The strongest supported issue is timezone mismatch because the platform report is UTC while AppsFlyer is America/Los_Angeles, and reviewed policy requires timezone alignment first. Postback delay may contribute partially, but current summary does not support a broad outage. Event mapping is matched. Attribution window, channel mapping, deduplication or reattribution, and privacy or invalid-traffic filtering require additional evidence.",
+      "internal_explanation_summary": "The platform reports 1250 installs and AppsFlyer reports 900 installs for campaign C123 on 2025-02-14, producing a 28.0% difference. The strongest supported likely issue is timezone mismatch because platform data is UTC while AppsFlyer data is America/Los_Angeles, and reviewed attribution guidance requires timezone alignment before concluding a discrepancy. Postback delay may contribute partially, but available summary metrics do not support a broad outage. Event mapping is matched. Attribution-window, deduplication or reattribution, channel mapping, and privacy or invalid traffic checks require further aggregated evidence if the gap remains material after timezone normalization.",
       "requires_human_review": true
     },
     "confidence_final_rule_checked": 0.85,
     "usage": {
-      "completion_tokens": 1888,
-      "total_tokens": 4792,
-      "prompt_tokens": 2904,
+      "completion_tokens": 1771,
+      "total_tokens": 4653,
+      "prompt_tokens": 2882,
       "prompt_tokens_details": {
         "cached_tokens": 0
       },
       "completion_tokens_details": {
-        "reasoning_tokens": 494
+        "reasoning_tokens": 442
       }
     },
-    "elapsedMs": 73011
+    "elapsedMs": 69978
   },
   "assertions": {
     "routing_schema_and_expected_values": "passed",

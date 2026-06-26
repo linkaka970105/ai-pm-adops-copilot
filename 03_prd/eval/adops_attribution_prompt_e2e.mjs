@@ -330,8 +330,8 @@ function buildRoutingSystemPrompt(testCase) {
     .replaceAll("{{phase_scope_json}}", jsonFragment(input.phase_scope));
 }
 
-function buildRoutingUserPrompt() {
-  return "请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。";
+function buildChatCompletionTrigger() {
+  return "Return one strict JSON object only.";
 }
 
 function getRequiredEntities(intent) {
@@ -740,10 +740,6 @@ function buildDiagnosisSystemPrompt(routing, toolContext) {
     .replaceAll("{{business_rules_json}}", jsonFragment(input.business_rules));
 }
 
-function buildDiagnosisUserPrompt() {
-  return "请读取 system prompt 中已经填入的「运行时输入」JSON，并只返回符合输出 schema 的严格 JSON object。";
-}
-
 function validateDiagnosis(diagnosis) {
   assert(!Object.prototype.hasOwnProperty.call(diagnosis, "confidence"), "diagnosis prompt must not output top-level confidence; workflow computes confidence_final");
   assert(!Object.prototype.hasOwnProperty.call(diagnosis, "confidence_final"), "diagnosis prompt must not output confidence_final; workflow computes it");
@@ -791,7 +787,7 @@ async function main() {
   for (const testCase of routingCases) {
     const result = await chatJson(headers, [
       { role: "system", content: buildRoutingSystemPrompt(testCase) },
-      { role: "user", content: buildRoutingUserPrompt(testCase) },
+      { role: "user", content: buildChatCompletionTrigger() },
     ], testCase.id);
     const routing = normalizeRouting(result.json, testCase);
     validateRouting(testCase, routing);
@@ -801,7 +797,7 @@ async function main() {
   const toolContext = simulateTools();
   const diagnosisResult = await chatJson(headers, [
     { role: "system", content: buildDiagnosisSystemPrompt(routingResults[1].routing, toolContext) },
-    { role: "user", content: buildDiagnosisUserPrompt() },
+    { role: "user", content: buildChatCompletionTrigger() },
   ], "diagnosis_attribution_case");
   validateDiagnosis(diagnosisResult.json);
   const diagnosisConfidenceFinal = calculateDiagnosisConfidence(diagnosisResult.json, toolContext);
