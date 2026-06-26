@@ -100,6 +100,8 @@ Supported intents:
 - knowledge_lookup
 - out_of_scope_customer_reply_generation
 - out_of_scope_sdk_or_creative
+- out_of_scope_operation_change
+- out_of_scope_billing_contract
 - unknown
 
 Risk rubric:
@@ -130,7 +132,7 @@ Confidence scoring:
 
 Output schema:
 {
-  "intent": "campaign_performance_diagnosis | attribution_discrepancy_check | knowledge_lookup | out_of_scope_customer_reply_generation | out_of_scope_sdk_or_creative | unknown",
+  "intent": "campaign_performance_diagnosis | attribution_discrepancy_check | knowledge_lookup | out_of_scope_customer_reply_generation | out_of_scope_sdk_or_creative | out_of_scope_operation_change | out_of_scope_billing_contract | unknown",
   "language": "zh | en | mixed",
   "entities": {
     "account_id": "string|null",
