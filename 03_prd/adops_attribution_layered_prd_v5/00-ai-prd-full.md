@@ -10,7 +10,7 @@
 - [第二部分：Agent 核心人设](#part-2)
 - [第三部分：核心工作流与意图定义](#part-3)
 - [实现层继承与公共约束](#implementation-contracts)
-- [第四部分：Agent 工作流、技术栈与实现](#part-4)
+- [第四部分：Agent 工作流、技术栈与实现（R&D 蓝图）](#part-4)
 - [第五部分：知识库架构与数据管线](#part-5)
 - [第六部分：AI 评估框架、数据集与发布门禁](#part-6)
 - [第七部分：安全兜底、Badcase 与人工接管](#part-7)
@@ -609,7 +609,7 @@ flowchart TD
 
 - 所有查询使用半开区间 `[start_inclusive, end_exclusive)`；服务端保存 UTC 绝对时间，另带 `display_timezone`，不使用 `23:59:59` 表示日终。
 - 计算使用十进制高精度；API 数值保留 6 位小数，UI 百分比按 `ROUND_HALF_UP` 显示 2 位，原始输入和未舍入结果进入 Trace。
-- 对称差异：两源均为 0 时返回 0 并标记 `both_zero=true`；仅一源为 0 时返回 1（100%）并标记 `one_source_zero=true`。
+- 有界对称差异：`abs(source_a-source_b) / max(abs(source_a),abs(source_b))`；两源均为 0 时返回 0 并标记 `both_zero=true`，仅一源为 0 时返回 1（100%）并标记 `one_source_zero=true`。这里不使用“两源均值”作分母，避免与另一种 percentage difference 定义混淆。
 - 方向差异的基准源为 0 时返回 `not_computable`，只展示绝对差值；不得用无穷大或 0 代替。
 
 ### 证据充分度
@@ -629,11 +629,115 @@ flowchart TD
 
 <a id="part-4"></a>
 
-## 第四部分：Agent 工作流、技术栈与实现
+## 第四部分：Agent 工作流、技术栈与实现（R&D 蓝图）
+
+> 本部分定义总控 Agent、三个业务子 Agent、交付守卫，以及它们共同依赖的固定工作流、只读工具、证据与状态合同。核心原则是：**模型负责理解与组织表达，确定性系统负责权限、工具预算、指标计算、证据关联、状态裁决与最终放行。** 所有业务结果必须经过交付守卫；V1 始终内部、只读，不执行投放变更，不自动向客户发送内容。
+>
+> 阅读路径：产品与面试速读 4.0，以及各 Agent 的 4.x.1（职责）、4.x.3（Pipeline）、4.x.4（选型理由）；研发、数据、测试与安全再读完整 Prompt、Schema、4.6-4.7 和附件 A.8。第三部分描述产品级主流程，本部分进一步回答每一步“谁执行、消费什么、产出什么、失败时停在哪里”。
+
+### 4.0 R&D 蓝图总览
+
+#### 4.0.1 五个核心组件与职责隔离
+
+| 核心组件 | 系统身份 | 核心目标 | 硬边界 | 唯一正式输出 |
+| --- | --- | --- | --- | --- |
+| 总控 Agent | 请求编排器与范围守门员 | 判断“是什么任务、能否执行、交给谁” | 不调用工具、不计算指标、不诊断、不终审 | `route_candidate_v2`；`route_final_v2` 由规则层另行生成 |
+| 投放效果诊断 Agent | 证据驱动的指标链路分析器 | 解释“哪里变化、哪些是贡献、下一步验证什么” | 不自行算数，不把贡献或相关性写成已确认根因 | `performance_diagnosis_draft_v2` |
+| 归因差异核对 Agent | 跨源口径与数据对账器 | 先证明可比，再计算差异，最后组织候选解释 | 不读设备级原始日志，不自行改公式，不做责任归属 | `attribution_diagnosis_draft_v2` |
+| 知识与案例检索 Agent | 受 ACL、版本和有效期约束的知识回答器 | 有权威引用才回答，无可靠引用则暴露知识缺口 | 不分析具体账户，不把案例当成当前事实 | `knowledge_answer_draft_v2` |
+| 交付守卫 | 独立质量裁决与发布闸门 | 只放行有权限、有证据、状态一致且失败可见的内容 | 格式化模型不得新增 claim、数值、动作或状态 | `policy_guard_result_v2` + `delivery_payload_v2` |
+
+职责隔离决策：总控不会审核自己路由后的业务结果。业务 Owner 的草稿直接进入交付守卫，由独立的确定性策略内核决定最终状态；这样避免同一生成模型既提出计划又为计划和结论“自证正确”。一个业务 Trace 只有一个业务 Owner；诊断 Workflow 可以调用检索工具，但不会在三个业务 Agent 之间自由串联。
+
+#### 4.0.2 在线执行主链路与关键产物
+
+```mermaid
+flowchart LR
+  U["用户请求 + 页面上下文"] --> M["总控 Agent\nroute_candidate_v2"]
+  M --> R["路由规则层\nroute_final_v2"]
+  R -->|可执行| W["固定 Workflow\n授权与调用预算"]
+  R -->|澄清/阻断| PG["Pre-execution Guard\n不伪造业务产物"]
+  W --> T["只读 Tool Gateway\nToolEnvelope"]
+  T --> C["语义层/对账规则层\n确定性计算"]
+  C --> E["Evidence Builder\nEvidence + 预构建事实/链接"]
+  E --> A["唯一业务 Agent\n结构化 draft_v2"]
+  A --> L["Claim Link Validator\n后验校验候选 Claim"]
+  L --> B["EvidenceClaimBundle"]
+  B --> G["交付守卫\n状态裁决"]
+  PG --> G
+  G -->|允许字段| F["受限格式化 Agent\ndelivery_payload_v2"]
+  G -->|需人工| H["人工审核队列"]
+  H -->|approved -> resumed| G
+  F --> O["内部诊断卡/降级结果"]
+```
+
+| 动作 | 唯一 Owner | 输入 | 关键产物 | 命中即停止/降级条件 |
+| --- | --- | --- | --- | --- |
+| 语义候选路由 | 总控模型 | 原始 Query、已确认槽位、注册表摘要 | `route_candidate_v2` | 歧义、缺字段、范围风险只生成澄清或风险信号 |
+| 最终路由、权限与预算 | 确定性路由规则 | 候选路由、IAM、Policy、当前灰度配置 | `route_final_v2` | 权限不允许、范围外、未知工具时 `allowed_tools=[]` |
+| 工具编排 | Workflow Engine | `route_final_v2` | 版本化 Tool Request 与 Tool Run | 达调用上限、核心工具不可用或参数不可恢复时停止 |
+| 外部数据读取 | Tool Gateway | 签名授权引用与规范化参数 | `tool_envelope_v2` | 权限失败 fail closed；模型不得补参数后重试 |
+| 指标/差异计算 | 指标语义层或对账规则层 | 有效 Tool Envelope | `metric_analysis` 或 `reconciliation_result` | 不可比、零分母、质量不达标时只输出限制状态 |
+| Evidence 与输入事实预构建 | Evidence Builder / Rule Claim Builder | 工具行、知识片段、规则结果 | Evidence、Derivation、observed/derived Claim 与 validated input links | 缺字段、越权、失效证据不得进入生成上下文 |
+| 业务解释 | 唯一业务 Agent | 通过校验的结构化上下文 | 对应 `*_draft_v2` | 无证据内容只能是 `pending_check`；高风险转人工 |
+| 候选 Claim 关联校验 | Claim Link Validator | AgentDraft + Evidence + 预构建 Links | `evidence_claim_bundles` | proposed Evidence 越权、冲突或不支持文本时保持 `unvalidated` |
+| 最终状态裁决 | 交付守卫确定性内核 | Route；按分支条件补充 draft、Evidence、Tool Run 或 failure context | `policy_guard_result_v2`、`allowed_payload_v2` | 按 4.6.4 首个命中规则 fail closed |
+| 表达整理 | 受限格式化 Agent | `allowed_payload_v2` | `delivery_payload_v2` | 新增 claim/数字/动作时丢弃并回退固定模板 |
+
+每个步骤必须记录 `trace_id`、`span_id`、执行组件、输入/输出引用、前后 Workflow 状态、Prompt/模型/工具/规则/知识版本、延迟、token/工具成本、重试、错误码与 `data_origin`。Trace 保存中间产物引用，不把完整敏感对象复制进模型上下文。
+
+#### 4.0.3 受控交接 Envelope 与状态转移
+
+`route_candidate_v2` 中的实体、工具意图和 Retrieval Plan 都是**未授权候选**，下游不得直接消费。确定性路由层必须逐项校验权限、范围、必填字段、工具 allowlist、检索 scope、调用预算和当前灰度配置。候选计划被拒绝时，不静默删除后继续生成答案，而是按 4.6.4 的首个命中规则进入前置 Guard 裁决。
+
+交接只遵守四条原则：一是只有签名 `route_final_v2` 能触发下一步；二是只有可执行分支才签发 `workflow_task_envelope_v2`；三是 Workflow 只能收紧工具、检索和预算，不能扩权；四是人工恢复必须基于不可变 Checkpoint，并重新校验当前权限与策略。字段级合同与完整状态转移统一放在 4.6.4 和附件 A.8，避免概览与实现细节重复维护。
+
+```mermaid
+stateDiagram-v2
+  [*] --> Intake
+  Intake --> PreExecutionGuard: 澄清/权限/范围/系统阻断
+  Intake --> Authorized: 可执行 RouteFinal
+  Authorized --> CollectingEvidence
+  CollectingEvidence --> Synthesizing
+  Synthesizing --> Guarding
+  PreExecutionGuard --> Guarding
+  Guarding --> Completed
+  Guarding --> HumanReview
+  HumanReview --> Guarding: approved + revalidate
+```
+
+#### 4.0.4 端到端合成 Trace 演练
+
+以下只用于说明组件交接，`trace_id=tr_syn_attr_001`，`data_origin="synthetic"`，数值复用附件 A.1.2、工具与证据结构复用 A.5-A.6；它不是生产结果，也不新增 Schema。
+
+| 阶段 | 执行者 | 动作 | 关键产物/状态 |
+| --- | --- | --- | --- |
+| Intake | 总控 Agent | 接收“核对 `C_DEMO_123` 平台 1,120、MMP 1,080 的安装差异”，保留对象、事件、时间、时区与字段来源 | `route_candidate_v2`；只给候选意图与计划 |
+| Route | 确定性路由规则 | 权限、范围、必填字段和工具覆盖通过 | `route_final_v2`，Owner=`attribution_discrepancy_agent` |
+| Collect | Workflow Engine + Tool Gateway | 并行读取平台与 MMP 聚合报表 | 两个独立 Tool Envelope；不得互相覆盖原值 |
+| Evidence | Evidence Builder | 把两源观测转换为独立 Evidence，并建立可校验关联 | `ev_syn_attr_platform_001`、`ev_syn_attr_mmp_001` |
+| Calculate | 对账规则层 | 先确认同一绝对时间窗、时区和事件映射可比，再复算差异 | `absolute_gap=40`、`symmetric_gap_rate=3.5714%`、`directional_gap_rate_vs_mmp=3.7037%`，均为 `derived_fact` |
+| Synthesize | 归因差异核对 Agent | 组织两源事实、派生差异、九项核查状态和待验证项 | `attribution_diagnosis_draft_v2`；没有 Verification Event 时不得产生 `confirmed_cause` |
+| Guard | 交付守卫 | 校验数值、九项完整性、Evidence Link、权限和因果措辞 | 仅展示两源证据而未补齐其他核查证据时映射为 `partial_evidence`，不为讲故事强行输出 `ready` |
+| Deliver | 受限格式化 Agent | 只整理白名单字段并显式展示限制 | `delivery_payload_v2`；内部可读、失败可见 |
+
+#### 4.0.5 技术分层与选型原则
+
+| 技术层 | 负责 | 不负责 | 统一评估维度 |
+| --- | --- | --- | --- |
+| 低延迟结构化模型 | 意图、槽位、风险候选与受限格式化 | 权限终判、计算、最终状态 | 结构化成功率、任务准确率、P95、单次有效会话成本、回退率 |
+| 标准生成模型 | Evidence Context 内的解释、候选原因和可读表达 | 补数据、改公式、确认因果、执行动作 | 数字忠实、证据绑定、过度断言、任务完成度、成本 |
+| 确定性服务 | IAM、Policy、工具预算、计算、证据关系、状态不变量 | 自由生成业务结论 | 单测覆盖、可复算率、错误阻断率、可用性 |
+| 检索系统 | ACL 过滤、混合召回、重排、版本、引用 | 用无权威来源补答、把案例升级为事实 | Recall@K、nDCG、引用准确率、无答案拒答、延迟 |
+| 人工审核 | 责任、结算、客户承诺、证据冲突与高风险恢复 | 替模型静默补数据或绕过权限 | 队列 SLA、一致率、恢复成功率、复发率 |
+
+具体模型只作为可替换 Profile 或实验候选，必须经第六部分的同集盲测与灰度门禁后才能成为生产选型；不因案例或厂商宣传直接写成已验证事实。
 
 ### 4.1 总控 Agent
 
 #### 4.1.1 核心职责
+
+**系统定位：** 请求编排器与范围守门员。质量优先级为“路由正确性 > Fail Closed > 低延迟”；一句话记忆是“只决定去哪、能不能去，不负责诊断和终审”。
 
 - 接收原始问题、页面上下文、强制 `auth_context` 和可选 `user_preferences`。
 - 保留用户事实，抽取意图、实体和字段来源；发现冲突时追问。
@@ -644,40 +748,39 @@ flowchart TD
 
 #### 4.1.2 输入、上下文与输出
 
-| 类型 | 字段 | 来源 | 必需 | 说明 |
-| --- | --- | --- | --- | --- |
-| 输入 | `user_query` | 用户 | 是 | 原文不可被覆盖 |
-| 上下文 | `page_context` | 投放后台 | 否 | 服务端签名 context_id，含 object scope、UI state version、observed_at；每字段携带来源 |
-| 上下文 | `conversation_slots` | 会话槽位服务 | 否 | 仅结构化已确认字段，含 turn_id、asserted_by、confirmed_at；自由文本摘要不得触发工具 |
-| 安全 | `auth_context` | IAM/租户服务 | 是 | user、tenant、role、account scopes、knowledge scopes；与画像分离 |
-| 偏好 | `user_preferences` | 偏好服务 | 否 | 语言、时区显示、默认对比期；不得授予权限 |
-| 配置 | `intent_registry` | 配置中心 | 是 | 意图、必填字段、分类裁决、唯一 Owner、版本 |
-| 配置 | `tool_registry` | 工具网关 | 是 | 只读工具与允许场景 |
-| 配置 | `safety_policy` | 策略中心 | 是 | 范围、风险、客户可见与注入规则 |
-| 配置 | `current_phase_scope` | 发布配置 | 是 | 当前阶段已开放意图、连接器与租户 |
-| 输出 | `route_candidate` | 总控 | 是 | 候选意图、槽位、冲突、计划和风险信号 |
+| 层级 | 字段 | 产生方 | 是否进入总控模型 | 必需 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| Workflow 入口 | `user_query` | 用户 | 是 | 是 | 原文不可被覆盖 |
+| Workflow 入口 | `page_context` | 投放后台 | 仅进入签名且允许的字段 | 否 | context_id、object scope、UI state version、observed_at；每字段携带来源 |
+| Workflow 入口 | `conversation_slots` | 会话槽位服务 | 仅进入结构化已确认字段 | 否 | 含 turn_id、asserted_by、confirmed_at；自由文本摘要不得触发工具 |
+| 安全输入 | `auth_context` | IAM/租户服务 | 否 | 是 | 完整 user、tenant、role 与 scopes 只供确定性权限层；与画像分离 |
+| 模型上下文 | `auth_context_summary` | 权限投影服务 | 是 | 是 | 只含当前路由判断所需的脱敏允许/禁止摘要，不得授予权限 |
+| 模型上下文 | `user_preferences` | 偏好服务 | 是 | 否 | 语言、时区显示、默认对比期；不得改变权限与范围 |
+| 配置 | `intent_registry`、`tool_registry`、`safety_policy`、`current_phase_scope` | 配置/策略中心 | 仅进入版本化摘要 | 是 | 原始敏感策略与凭证不进入模型；模型只可选注册项 |
+| 模型输出 | `route_candidate_v2` | 总控 Agent | 不适用 | 是 | 候选意图、槽位、冲突、计划和风险信号，不具有执行权 |
+| Workflow 输出 | `route_final_v2` | 确定性路由规则 | 否 | 是 | 权限、范围、字段与工具预算终判；是后续唯一签名路由输入 |
 
 #### 4.1.3 详细 Pipeline
 
-1. 创建 `trace_id`，保存原始输入和所有配置版本。
-2. 规范语言与时间表达；绝不修改数值、ID、国家、平台或用户明确口径。
-3. 合并页面上下文与已确认的 `conversation_slots`：保留 `value`、`source`、`observed_at`/`confirmed_at`；冲突字段进入 `slot_conflicts`。自由文本摘要只能作为 `context_only`。
-4. 调用 IAM 做租户与对象级权限预检；`auth_context` 缺失即阻断。
-5. 运行确定性范围规则：写操作、客户自动发送、原始敏感数据、SDK/素材深排进入阻断/人工路径。
-6. 模型输出候选意图、候选实体、缺字段和工具/检索意图。
-7. Schema Validator 拒绝未知意图、未知工具、额外字段和格式错误。
-8. 路由规则复算必填字段、权限、页面冲突和工具覆盖，生成 `route_final`。
-9. 若 `route_final` 不可执行，返回澄清/阻断；否则交给唯一 workflow Owner。
-10. 记录路由延迟、token、模型、Prompt、规则和路由版本。
+1. **[Trace 初始化｜Workflow Engine]** 创建 `trace_id` 与原始请求快照，冻结本次使用的意图、工具、策略、灰度和 Prompt 版本；产物为 `workflow_state=intake` 的 Trace Header。
+2. **[输入保真｜规则解析器]** 规范语言与时间表达；绝不修改数值、ID、国家、平台或用户明确口径；产物为带字段来源的规范化输入。
+3. **[上下文合并｜Slot Merger]** 合并页面上下文与已确认的 `conversation_slots`，保留 `value`、`source`、`observed_at`/`confirmed_at`；冲突字段进入 `slot_conflicts`，自由文本摘要只能作为 `context_only`。
+4. **[权限预检 Gate｜IAM]** 做租户与对象级权限预检；`auth_context` 缺失、过期或对象不在 scope 时命中即停止，不运行模型。
+5. **[范围预检 Gate｜Policy Engine]** 检测写操作、客户自动发送、原始敏感数据、SDK/素材深排；命中后只生成阻断/人工路径，不允许产生工具计划。
+6. **[语义候选｜总控模型]** 在注册表摘要内输出候选意图、候选实体、缺字段和工具/检索意图；产物只能是 `route_candidate_v2`。
+7. **[Schema Gate｜Validator]** 拒绝未知意图、未知工具、额外字段和格式错误；失败仅允许一次规则兜底，不得让模型自由改写注册表。
+8. **[确定性归一｜Routing Rules]** 复算必填字段、权限、页面冲突和工具覆盖，生成拥有执行权的 `route_final_v2`。
+9. **[分支与委托｜Workflow Engine]** 不可执行时进入澄清/阻断并统一经过交付守卫；可执行时只交给 `route_final_v2.owner`。业务 Owner 的草稿不返回总控终审，而是直接进入 4.5 交付守卫。
+10. **[审计落盘｜Trace Service]** 记录路由延迟、token、模型、Prompt、规则、路由版本、候选与最终结果的差异。
 
 #### 4.1.4 技术与模型选型理由
 
-| 环节 | 初始方案 | 理由 | 替代方案与退出条件 |
-| --- | --- | --- | --- |
-| 意图/槽位 | 低延迟结构化输出模型 + 枚举规则 | 兼容中英文广告术语且可 Schema 校验 | 若小模型意图 < 90%，升级模型或增加分类器 |
-| 时间/数值/ID | 规则解析器优先，模型补充 | 避免模型改写关键事实 | 规则召回不足时增加词典，不允许模型静默修正 |
-| 权限/范围 | 确定性 IAM + 策略引擎 | 安全终判不可交给模型 | 无替代 |
-| 路由 | 模型候选 + 规则归一 | 同时兼顾语义召回和可审计性 | 纯模型只有在压力集长期 100% 时也不取消规则 |
+| 任务性质 | 初始方案 | 为什么适合 | 拒绝的方案及原因 | 切换/退出条件 |
+| --- | --- | --- | --- | --- |
+| 中英文广告意图与槽位 | 低延迟结构化输出模型 + 枚举规则 | 语义覆盖优于纯规则，输出又可做 Schema 校验 | 纯规则难覆盖自然语言变化；旗舰模型全权路由成本高且仍不可终判权限 | Golden Set 意图准确率 < 90% 或结构化失败超门槛时升级模型/增加分类器，但保留规则终判 |
+| 时间、数值与 ID 保真 | 规则解析器优先，模型只报告无法解析项 | 关键事实可复算、可审计 | 让模型静默修正会制造不可追溯参数 | 规则召回不足时扩展词典与解析器，不把终判权切给模型 |
+| 权限与范围终判 | 确定性 IAM + 策略引擎 | 安全边界必须 fail closed 且可证明 | LLM 判权限不可复现，也可能受注入影响 | 无模型替代；策略服务不可用时阻断 |
+| 最终路由与工具预算 | 模型候选 + 规则归一 | 兼顾语义召回、唯一 Owner 与可审计执行权 | 纯模型可能越过必填字段、权限或工具覆盖；纯规则语义召回不足 | 根据路由压力集调模型/规则权重；即使模型压力集长期满分也不取消硬门 |
 
 #### 4.1.5 Prompt 正文
 
@@ -715,19 +818,17 @@ flowchart TD
 {
   "schema_version": "route_candidate_v2",
   "normalized_query": "",
-  "language": "zh|en|mixed",
-  "intent_candidate": "",
-  "classification_status": "accepted|ambiguous|rejected",
+  "language": "zh",
+  "intent_candidate": "unknown",
+  "classification_status": "ambiguous",
   "classifier_version": "",
   "calibration_version": "",
   "pending_intents": [],
-  "entities": [
-    {"name": "", "value": null, "source": "user_query|page_context|conversation_slot", "observed_at": null, "confirmed_at": null, "turn_id": null}
-  ],
+  "entities": [],
   "slot_conflicts": [],
   "missing_fields_model_reported": [],
   "risk_signals": [],
-  "route_to": "",
+  "route_to": "master_agent",
   "tool_intents": [],
   "retrieval_plan": [],
   "clarification_question": "",
@@ -743,14 +844,14 @@ flowchart TD
 ```json
 {
   "schema_version": "route_final_v2",
-  "trace_id": "tr_xxx",
+  "trace_id": "tr_syn_route_001",
   "intent_final": "attribution_discrepancy_check",
   "classification_status": "accepted",
-  "classifier_version": "intent_classifier@x.y.z",
-  "calibration_version": "intent_calibration@x.y.z",
+  "classifier_version": "intent_classifier@0.1.0-synthetic",
+  "calibration_version": "intent_calibration@0.1.0-synthetic",
   "decision_reasons": ["classification_accepted", "required_fields_complete", "permission_allowed"],
   "owner": "attribution_discrepancy_agent",
-  "required_fields_final": [],
+  "missing_required_fields_final": [],
   "permission_status": "allowed",
   "scope_status": "in_scope",
   "workflow_state": "authorized",
@@ -770,7 +871,7 @@ flowchart TD
 | 必填字段缺失 | 不执行工具 | `clarification_required`，只问必要字段 |
 | 页面与用户输入冲突 | 要求确认 | 展示两个来源和值 |
 | 写操作/自动发送 | 立即阻断 | 说明只读边界和人工路径 |
-| 多意图有依赖 | 先执行前置意图 | 展示任务顺序 |
+| 多意图有依赖 | 只为用户已确认的首个意图生成 `route_final`；其余保留 `pending_intents`，不得自动续跑 | 展示任务顺序与显式“继续”入口 |
 | 模型/Schema 失败 | 规则兜底分类一次；仍失败转人工 | `system_error` 或人工队列 |
 
 #### 4.1.8 评测指标与 Badcase
@@ -789,6 +890,8 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 
 #### 4.2.1 核心职责
 
+**系统定位：** 证据驱动的指标链路分析器。质量优先级为“数字忠实 > 证据充分 > 验证动作可执行”；它负责解释变化结构和提出可验证候选，不负责确认根因。
+
 - 消费已通过权限与范围校验的投放异常任务。
 - 使用指标语义层输出的确定性计算和贡献拆解，不自行算数。
 - 结合权威 SOP 与已审核案例形成候选原因、反证/缺口和验证动作。
@@ -796,41 +899,48 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 
 #### 4.2.2 输入、上下文与输出
 
-| 类型 | 字段 | 来源 | 必需 | 说明 |
-| --- | --- | --- | --- | --- |
-| 路由 | `route_final` | 总控规则层 | 是 | 意图、权限、字段、允许工具 |
-| 输入 | `user_query` | 用户 | 是 | 经过总控保真传递的原文 |
-| 计算 | `metric_analysis` | 指标语义层 | 是 | 当前/基线、公式、贡献、质量状态 |
-| 证据 | `evidence_objects` | 证据存储 | 是 | 数据、规则和文档证据 |
-| 关联 | `claim_evidence_links` | 确定性关联服务 | 是 | 支持、反证和上下文关系；模型不得自签 |
-| 知识 | `retrieved_context` | 知识检索 | 是 | 指标口径与投放 SOP |
-| 案例 | `reviewed_cases` | 案例库 | 否 | 仅作检查方向 |
-| 配置 | `diagnosis_policy` | 工作流配置 | 是 | 必查项、因果词、动作边界 |
-| 输出 | `performance_diagnosis_draft_v2` | 本 Agent | 是 | 分层结论与下一步 |
+本节区分 Workflow 启动输入、确定性中间产物和真正进入生成模型的 synthesis context；不能把“Pipeline 中会生成”误写成“模型一开始就拥有”。
+
+| 层级 | 字段 | 产生方 | 是否进入生成模型 | 必需 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| Workflow 启动 | `workflow_task_envelope_v2` | 确定性路由层 | 仅进入脱敏投影 | 是 | 已批准实体、唯一 Owner、允许工具/检索计划引用、预算、版本和 deadline |
+| Workflow 启动 | `user_query` | 原始请求快照 | 是 | 是 | 经过总控保真传递的原文，不从摘要还原 |
+| 中间产物 | `tool_envelopes` | Tool Gateway | 否 | 是 | 平台与可选 MMP 的独立回包；先经质量和 Evidence Builder 处理 |
+| Synthesis 输入 | `metric_analysis_v2` | 指标语义层 | 是 | 是 | 当前/基线、公式、贡献、质量状态；关闭字段 Schema |
+| Synthesis 输入 | `input_claims`、`validated_input_links` | 规则计算与 Claim Link Validator | 是 | 是 | 仅对应预先生成的 observed/derived facts；不存在“先有候选 Claim 后有输入 Link”的时序循环 |
+| Synthesis 输入 | `evidence_objects` | Evidence Builder | 是 | 是 | 数据、规则和文档证据的允许字段投影 |
+| Synthesis 输入 | `knowledge_evidence_objects` | `search_knowledge_base` + Evidence Builder | 是 | 是 | 指标口径与投放 SOP；诊断 Workflow 调工具，不调用 4.4 Agent |
+| Synthesis 输入 | `reviewed_cases` | `search_similar_cases` | 是 | 否 | 仅作 `context_only` 检查方向 |
+| Synthesis 输入 | `diagnosis_policy` | 工作流配置 | 是 | 是 | 必查项、因果词、动作边界和版本 |
+| 模型输出 | `performance_diagnosis_draft_v2` | 本 Agent | 不适用 | 是 | 分层 Claim 与 NextAction 草稿，Evidence ID 仍是 proposed |
+| 后处理产物 | `evidence_claim_bundles` | Claim Link Validator | 否 | 是 | 对模型新 Claim 建立/验证 Link 后交付 4.5 Guard |
 
 #### 4.2.3 详细 Pipeline
 
-1. 校验 `intent_final=campaign_performance_diagnosis`、权限和必填字段。
-2. 工作流调用 `get_platform_report`，`sections` 至少含 `metrics` 与允许的 `dimension_breakdown`；账户/审核/预算投放状态需要时请求 `delivery_status`。
-3. 若指标涉及安装或下游事件，按计划调用 `get_mmp_report`；工具结果不能互相覆盖。
-4. 指标语义层先验证基线可比性：周期长度/星期结构、时区、币种、数据成熟度、Campaign 活跃状态和重大预算/配置变化；不满足时不得直接归因于业务表现。
-5. 指标语义层复算公式并返回数据质量：分母、时区、币种、新鲜度、缺失值、异常值。
-6. Driver Tree 按可解释公式拆解比率：CPA 拆为 CPC 与 click-to-conversion CVR，CPI 拆为 CPC 与 click-to-install CVR，ROAS 拆为 revenue 与 spend。正值场景可用 log-change 分解；零/负值使用逐项替换 waterfall 并标记不可加总。
-7. 维度贡献只计算可加总的额外花费、流失点击/安装/转化等原子量；geo、os、placement、creative 各自独立分析，禁止把重叠维度贡献相加。低于 `min_sample_policy` 的维度只标记样本不足。
-8. 由总控生成的检索计划查询指标口径、SOP 和已审核案例；未审核案例不得进入 Prompt。
-9. Agent 按 `observed_fact -> derived_fact -> candidate_cause -> pending_check` 组织草稿。
-10. 每个 `candidate_cause` 写支持 claim-evidence link、反证/缺口、验证动作和 owner。
-11. 任何建议预算/出价/暂停/素材调整的内容只可表述为“人工评估项”，并触发人工门禁。
-12. 返回交付守卫；守卫失败时不得由本 Agent 自行改写绕过。
+1. **[准入 Gate｜Workflow Engine]** 校验 Envelope 的 `intent_final=campaign_performance_diagnosis`、Owner、权限、deadline、必填字段和预算；失败不启动工具。
+2. **[平台取数｜Workflow Engine + Tool Gateway]** 调用 `get_platform_report`，`sections` 至少含 `metrics` 与允许的 `dimension_breakdown`；需要时请求 `delivery_status`，产物为独立 `tool_envelope_v2`。
+3. **[MMP 补证｜Workflow Engine + Tool Gateway]** 指标涉及安装或下游事件时，按 Envelope 中已批准计划调用 `get_mmp_report`；两源回包不能互相覆盖。
+4. **[基线可比性 Gate｜指标语义层]** 验证周期长度/星期结构、时区、币种、数据成熟度、Campaign 活跃状态和重大预算/配置变化；不满足时停止强归因，状态进入 `partial_evidence`。
+5. **[指标复算｜指标语义层]** 复算公式与数据质量，显式返回分母、时区、币种、新鲜度、缺失值和异常值，产出 `metric_analysis_v2`。
+6. **[Driver 拆解｜指标语义层]** CPA 拆为 CPC 与 click-to-conversion CVR，CPI 拆为 CPC 与 click-to-install CVR，ROAS 拆为 revenue 与 spend；正值可用 log-change，零/负值用逐项替换 waterfall 并标记不可加总。
+7. **[维度贡献｜指标语义层]** 只计算可加总的额外花费、流失点击/安装/转化等原子量；geo、os、placement、creative 独立分析，禁止相加重叠贡献；低于 `min_sample_policy` 只标样本不足。
+8. **[事实与证据预构建｜Evidence Builder + Rule Claim Builder]** 工具行和规则结果先生成 observed/derived Claim、Evidence 与 validated input links；模型不得生成或改写这些数值事实。
+9. **[知识检索｜Workflow Engine]** 解引用 Envelope 中已批准的 Retrieval Plan，调用 `search_knowledge_base` 和可选 `search_similar_cases`；未审核案例不得进入 Prompt。这里调用的是检索工具，不是 4.4 Agent-to-Agent 委托。
+10. **[Claim 组织｜投放效果诊断 Agent]** 基于上述 synthesis context 按 `observed_fact -> derived_fact -> candidate_cause -> pending_check` 组织草稿；每个候选原因必须给 `proposed_evidence_ids`、反证/缺口、`verification_action_ids` 与 Owner。
+11. **[Claim-Evidence Gate｜Claim Link Validator]** 在合成后校验每个 proposed Evidence ID 的存在性、权限、适用范围和语义支持；数值/公式由规则验证，文本支持由受限判定模型提出，低于门槛保持 `unvalidated`，不得计入证据覆盖。
+12. **[高风险动作 Gate｜Policy Engine]** 预算、出价、暂停、定向、素材调整只可作为 `action_type=manual_change` 的人工评估项，并触发人工门禁。
+13. **[进入交付守卫｜Workflow Engine]** 把 draft、EvidenceClaimBundle、Tool Run 与 Workflow 状态交给 4.5；Guard 失败时本 Agent 不得自行改写绕过。
+
+合成演练可联读附件 A.1.1；Tool Request 见 A.5，Evidence 与 Link 见 A.6。所有演示必须显式 `data_origin="synthetic"`。
 
 #### 4.2.4 技术与模型选型理由
 
-| 环节 | 初始方案 | 理由 | 风险与控制 |
-| --- | --- | --- | --- |
-| 指标计算 | 版本化 SQL/规则语义层 | 可复算、可单测 | 字段映射错会系统性误导；强制版本与 100% 单测 |
-| 贡献拆解 | 确定性 period-over-period + 维度贡献 | 解释“变化来自哪里” | 不等同因果；UI 标注贡献而非根因 |
-| 候选原因 | 标准生成模型 + Evidence Context | 能组织多源证据与限制 | Schema、引用与因果词门禁 |
-| 案例检索 | 标签过滤 + 向量相似 | 复用经验检查顺序 | 只接收 reviewed 案例，不能单独支持 claim |
+| 任务性质 | 初始方案 | 为什么适合 | 拒绝的方案及原因 | 切换/退出条件 |
+| --- | --- | --- | --- | --- |
+| 指标计算 | 版本化 SQL/规则语义层 | 可复算、可单测、能保留分母与公式版本 | LLM 算数不可稳定复现，字段映射错误还会被自然语言掩盖 | 无模型替代；字段/公式变更必须 100% 规则回归 |
+| 贡献拆解 | 确定性 period-over-period + 维度贡献 | 能解释“变化来自哪里”并保持计算口径一致 | 没有实验或识别假设时直接上因果模型会把贡献误写成根因 | 数据不满足可比/样本策略即停止；未来因果能力必须另立实验与验收 |
+| 候选原因 | 标准生成模型 + Evidence Context | 能组织多源证据、反证、限制和验证动作 | 纯模板难覆盖组合异常；无约束模型会补写数据和因果 | 证据绑定、过度断言、P95 或有效会话成本不达门槛时切换模型/Profile 或回退模板 |
+| 案例检索 | 标签过滤 + 向量相似 | 可复用已审核案例的检查顺序 | 直接复制案例结论会产生跨客户迁移错误 | 仅接收 reviewed + `context_only`；相关性/脱敏不达标时关闭案例通道 |
 
 正值场景的比率拆解校验式：`Δln(CPA)=Δln(CPC)-Δln(click_to_conversion_cvr)`、`Δln(CPI)=Δln(CPC)-Δln(click_to_install_cvr)`、`Δln(ROAS)=Δln(revenue)-Δln(spend)`。该分解用于解释 driver，不把统计贡献升级为因果。
 
@@ -845,12 +955,13 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 3. 输出内部诊断草稿，不执行任何账户变更。
 
 输入变量：
-- route_final: {{route_final}}
+- workflow_task_context: {{workflow_task_context}}
 - user_query: {{user_query}}
 - metric_analysis: {{metric_analysis}}
 - evidence_objects: {{evidence_objects}}
-- claim_evidence_links: {{claim_evidence_links}}
-- retrieved_context: {{retrieved_context}}
+- input_claims: {{input_claims}}
+- validated_input_links: {{validated_input_links}}
+- knowledge_evidence_objects: {{knowledge_evidence_objects}}
 - reviewed_cases: {{reviewed_cases}}
 - diagnosis_policy: {{diagnosis_policy}}
 
@@ -859,9 +970,9 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 2. 检查 metric_analysis 的 current_period、baseline_period、timezone、currency、formula_version 和 quality_flags；缺关键项返回 partial_evidence。
 3. 逐条复述 observed_fact 和 derived_fact，不改变数值、单位和方向。
 4. 使用 contribution_breakdown 说明变化由哪些维度贡献，但不得称为因果根因。
-5. 只基于 evidence_objects 和有效 retrieved_context 生成 `claim_type=candidate_cause` 的 Claim。
+5. 只基于 evidence_objects、knowledge_evidence_objects 和 validated_input_links 生成 `claim_type=candidate_cause` 的 Claim；模型填写的 Evidence ID 仍是 proposed。
 6. 历史案例只能进入 validation_hint，不能单独成为经验证的 supports link。
-7. 对每个候选原因输出 counter_evidence_or_gap 和 verification_action。
+7. 对每个候选原因输出 counter_evidence_or_gap，并用 verification_action_ids 关联 next_actions。
 8. 没有证据的想法只能成为 `claim_type=pending_check`。
 9. 涉及预算、出价、暂停、定向、素材、客户承诺或责任判断时设置 requires_human_review=true。
 10. 只输出 JSON。
@@ -875,19 +986,19 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 输出 JSON：
 {
   "schema_version": "performance_diagnosis_draft_v2",
-  "status": "answered|partial_evidence|tool_degraded|need_clarification|out_of_scope|human_review_required",
+  "status": "partial_evidence",
   "problem_statement": "",
   "claims": [
     {
-      "claim_id": "",
-      "claim_type": "observed_fact|derived_fact|candidate_cause|confirmed_cause|excluded_cause|pending_check",
-      "statement": "",
-      "verification_status": "observed|computed|pending|confirmed|rejected",
+      "claim_id": "cl_example_pending_001",
+      "claim_type": "pending_check",
+      "statement": "待补充证据后判断候选原因",
+      "verification_status": "pending",
       "derivation": null,
       "verification_event_id": null,
       "proposed_evidence_ids": [],
       "counter_evidence_or_gap": [],
-      "verification_action": null,
+      "verification_action_ids": [],
       "owner": null
     }
   ],
@@ -905,7 +1016,7 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 - `claim_type=candidate_cause` 的 `proposed_evidence_ids` 不得为空；验证器无法建立 supports link 时迁移为 `pending_check`。
 - `claim_type=confirmed_cause` 必须包含 `verification_status=confirmed` 与有效 Verification Event；普通指标规则不得单独确认因果。
 - `claim_type=excluded_cause` 必须为 `verification_status=rejected`，并绑定反证 Evidence 与排除规则；无反证不得写“已排除”。
-- `next_actions` 字段固定为 `action`、`action_type=check|manual_change|escalate`、`owner`、`precondition`、`expected_evidence`、`completion_condition`。
+- `next_actions` 字段固定为 `action_id`、`related_claim_ids`、`action`、`action_type=check|manual_change|escalate`、`owner`、`precondition`、`expected_evidence`、`completion_condition`；候选原因的 `verification_action_ids` 必须指向同一草稿内的 Action。
 
 #### 4.2.7 安全、降级与人工接管
 
@@ -934,6 +1045,8 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 #### 4.3.1 核心职责
 
+**系统定位：** 跨源口径与数据对账器。质量优先级为“可比性 > 九项核查完整性 > 不过度归因”；核心顺序是“先判断能不能比，再判断差多少，最后才讨论为什么”。
+
 - 核对平台与 MMP 的聚合事件数据是否具有可比口径。
 - 输出各源原值、对齐前后差异、固定九项核查状态和证据。
 - 区分“原始报表数值不同”“同口径差异成立”“候选原因”“已确认原因”。
@@ -941,38 +1054,44 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 #### 4.3.2 输入、上下文与输出
 
-| 类型 | 字段 | 来源 | 必需 | 说明 |
-| --- | --- | --- | --- | --- |
-| 路由 | `route_final` | 总控规则层 | 是 | 权限、字段、允许工具 |
-| 输入 | `user_query` | 用户 | 是 | 经过总控保真传递的原文 |
-| 数据 | `source_snapshots` | 平台/MMP/postback 工具 | 是 | 原值与口径，不做强行合并 |
-| 计算 | `reconciliation_result` | 对账规则层 | 是 | 可比性、差异率、九项状态 |
-| 知识 | `attribution_context` | 权威知识库 | 是 | 窗口、事件、SAN/SKAN 等版本化规则 |
-| 证据 | `evidence_objects` | 证据存储 | 是 | 数据、知识与派生证据 |
-| 配置 | `checklist_policy` | 工作流配置 | 是 | 核查项、状态、停止和人工规则 |
-| 输出 | `attribution_diagnosis_draft_v2` | 本 Agent | 是 | 核查草稿 |
+| 层级 | 字段 | 产生方 | 是否进入生成模型 | 必需 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| Workflow 启动 | `workflow_task_envelope_v2` | 确定性路由层 | 仅进入脱敏投影 | 是 | 已批准对象、唯一 Owner、工具/检索计划引用、预算、版本和 deadline |
+| Workflow 启动 | `user_query` | 原始请求快照 | 是 | 是 | 经过总控保真传递的原文 |
+| 中间产物 | `tool_envelopes` | 平台/MMP/postback 工具 | 否 | 是 | 每个来源独立保存原值与口径，不做强行合并 |
+| Synthesis 输入 | `reconciliation_result` | 对账规则层 | 是 | 是 | 符合 `ComparabilityResult`：可比性、两源观察与差异计算 |
+| Synthesis 输入 | `checklist_result` | 配置化九项核查 DAG | 是 | 是 | 恰好九项、每项唯一、状态与 Evidence IDs 完整 |
+| Synthesis 输入 | `attribution_evidence_objects` | Evidence Builder | 是 | 是 | 两源数据、规则派生与知识证据的允许字段投影 |
+| Synthesis 输入 | `attribution_context` | `search_knowledge_base` + Evidence Builder | 是 | 是 | 窗口、事件、SAN/SKAN 等版本化规则 |
+| Synthesis 输入 | `checklist_policy` | 工作流配置 | 是 | 是 | 核查项、状态、停止和人工规则 |
+| 模型输出 | `attribution_diagnosis_draft_v2` | 本 Agent | 不适用 | 是 | 对观察、派生、候选与待查项的结构化草稿 |
+| 后处理产物 | `evidence_claim_bundles` | Claim Link Validator | 否 | 是 | 校验新 Claim 后交付 4.5 Guard |
 
 #### 4.3.3 详细 Pipeline
 
-1. 校验意图、account、app/campaign、事件、两种来源、时间范围、时区、MMP 和权限。
-2. 调用 `get_platform_report` 与 `get_mmp_report`；每个返回独立 snapshot、时区、刷新时间、事件口径和映射版本。
-3. 按需调用 `get_postback_summary`；只返回聚合成功、延迟、失败与拒收原因。
-4. 对账规则层先计算 `comparable`。对象、时间、时区、事件或口径未对齐时，不对外宣称“真实差异率”。
-5. 对可比数据计算 `absolute_gap`、`symmetric_gap_rate`，按需计算显式分母的 `directional_gap_rate`。
-6. 九项核查逐项返回状态与 Evidence Object；`privacy_attribution` 与 `invalid_traffic` 分开，后者无专用证据时必须为 `not_supported`；未知不能被当作 matched。
-7. 检索权威归因窗口、事件映射、渠道与隐私归因文档；冲突保留原来源。
-8. Agent 组织已观察事实、派生事实、候选原因与待验证项；只有输入携带有效 Verification Event 才可输出 confirmed_cause。
-9. 差异涉及结算、责任、赔偿、疑似作弊或无法解释冲突时转人工。
-10. 交付守卫过滤并生成内部核查卡。
+1. **[准入 Gate｜Workflow Engine]** 校验 Envelope 的意图、Owner、account、app/campaign、事件、两种来源、时间范围、时区、MMP、权限、预算与 deadline；失败不启动工具。
+2. **[双源取数｜Workflow Engine + Tool Gateway]** 并行调用 `get_platform_report` 与 `get_mmp_report`；每个返回独立 Tool Envelope、时区、刷新时间、事件口径和映射版本。
+3. **[Postback 补证｜Workflow Engine + Tool Gateway]** 仅在已批准计划内按需调用 `get_postback_summary`，只接收聚合成功、延迟、失败与拒收原因。
+4. **[可比性 Gate｜对账规则层]** 先计算 `comparable`；对象、绝对时间窗、时区、事件或口径未对齐时命中即停止强差异结论，只保留两源原值和对齐动作。
+5. **[差异计算｜对账规则层]** 对可比数据计算 `absolute_gap`、`symmetric_gap_rate`，按需计算显式分母的 `directional_gap_rate`；结果形成 Derivation 与 derived Claim。
+6. **[规则检索｜Workflow Engine]** 解引用 Envelope 中批准的计划，检索归因窗口、事件映射、渠道与隐私归因权威文档；冲突保留原来源。
+7. **[基础 Evidence 预构建｜Evidence Builder]** 先把两源观察、差异 Derivation 与权威知识片段转换为可验证 Evidence；无效、越权或失效对象不得进入九项核查或模型。
+8. **[九项核查循环｜配置化 DAG]** 消费已构建 Evidence，九项逐项产出唯一 ChecklistItem、状态与 Evidence IDs；DAG 可为核查结果生成新的派生 Evidence。`privacy_attribution` 和 `invalid_traffic` 分开，无专用证据时后者必须为 `not_supported`，未知不得映射为 `matched`。
+9. **[Claim 组织｜归因差异核对 Agent]** 组织 observed、derived、candidate 与 pending Claim；只有输入携带有效 Verification Event 才可复制 `confirmed_cause`。
+10. **[Claim-Evidence Gate｜Claim Link Validator]** 用 AgentDraft + Evidence 后验校验 proposed Evidence ID、九项关联和文本支持；低置信或冲突 Link 保持 `unvalidated`，不计入证据覆盖。
+11. **[人工 Gate｜Policy Engine]** 涉及结算、责任、赔偿、疑似作弊或无法解释冲突时转人工，不让模型输出责任结论。
+12. **[进入交付守卫｜Workflow Engine]** 交付 draft、完整 Checklist、EvidenceClaimBundle、Tool Run 与状态，由 4.5 生成内部核查卡或降级结果。
+
+端到端合成 Trace 见 4.0.4，未对齐与对齐后的规则真值见附件 A.1.2；不得为示例完整性虚构已确认归因根因。
 
 #### 4.3.4 技术与模型选型理由
 
-| 环节 | 初始方案 | 理由 | 风险与控制 |
-| --- | --- | --- | --- |
-| 对象/事件映射 | 版本化关系表 | 同一名称可能对应不同事件 | 缺映射则不可比，不让模型猜 |
-| 差异计算 | 规则服务 | 明确分母、零值、方向 | 公式版本单测 100% |
-| 固定核查 | 配置化 DAG | 防漏查且可灰度 | 每次变更触发回归 |
-| 解释 | 标准生成模型 + Evidence | 适合说明复杂口径 | 责任词、因果词、引用门禁 |
+| 任务性质 | 初始方案 | 为什么适合 | 拒绝的方案及原因 | 切换/退出条件 |
+| --- | --- | --- | --- | --- |
+| 对象/事件映射 | 版本化关系表 | 同名事件可能对应不同定义，关系表可审计与回滚 | 模型模糊匹配会把“看起来相同”误当成同一事件 | 缺映射即不可比；新增映射必须 Owner 审核并回归 |
+| 差异计算 | 确定性规则服务 | 分母、零值、方向、精度和舍入均可复算 | LLM 计算可能改分母或隐藏零值异常 | 公式版本单测 100%；规则服务失败则不计算 |
+| 固定九项核查 | 配置化 DAG + 集合不变量 | 防漏查、可灰度、能对每项追溯 Evidence | 让 Agent 自由规划会漏项或把未知写成 matched | 每次清单/状态变更触发 Schema、集合与回归测试 |
+| 复杂口径解释 | 标准生成模型 + Evidence Context | 适合组织多来源、限制和验证动作 | 纯模板难覆盖冲突组合；无约束生成会过度归因或归责 | 责任词、因果词、引用、P95 与成本任一不达门槛即回退受限模板/人工 |
 
 #### 4.3.5 Prompt 正文
 
@@ -980,12 +1099,13 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 你是「AdOps Copilot」的归因差异核对 Agent。你负责解释平台与 MMP 聚合数据的可比性、差异和核查状态。
 
 输入变量：
-- route_final: {{route_final}}
+- workflow_task_context: {{workflow_task_context}}
 - user_query: {{user_query}}
-- source_snapshots: {{source_snapshots}}
+- tool_envelopes: {{tool_envelopes}}
 - reconciliation_result: {{reconciliation_result}}
+- checklist_result: {{checklist_result}}
 - attribution_context: {{attribution_context}}
-- evidence_objects: {{evidence_objects}}
+- attribution_evidence_objects: {{attribution_evidence_objects}}
 - checklist_policy: {{checklist_policy}}
 
 工作步骤：
@@ -994,7 +1114,7 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 3. 读取 comparable。若为 false，只能说“原始数值不同但尚不可比”，并列出需对齐项。
 4. 若 comparable=true，使用 reconciliation_result 中已计算的差异；不得自行计算或更换分母。
 5. 对九项清单逐项输出 matched|likely_issue|needs_followup|not_supported|conflict|not_applicable。
-6. 每个 likely_issue 与 candidate_cause 必须绑定 evidence_id。
+6. `likely_issue` 原样复制 `checklist_result` 中已预构建的 `evidence_ids`；`candidate_cause` 填写 `proposed_evidence_ids`，正式 Claim Link 由合成后的 Validator 建立。
 7. 对未确认项写验证动作；不得把延迟率、失败率或窗口差异直接等同于根因。
 8. 不得归责客户、媒体或内部系统，不得承诺赔偿或结算结果。
 9. 证据冲突、重大差异无法解释或涉及责任时 requires_human_review=true。
@@ -1008,7 +1128,7 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 输出 JSON：
 {
   "schema_version": "attribution_diagnosis_draft_v2",
-  "status": "answered|partial_evidence|not_comparable|citation_conflict|human_review_required",
+  "status": "partial_evidence",
   "comparability": {
     "is_comparable": false,
     "blocking_mismatches": [],
@@ -1016,7 +1136,15 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
     "derived_differences": []
   },
   "checklist": [
-    {"item": "", "status": "", "evidence_ids": [], "explanation": ""}
+    {"item": "timezone", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "attribution_window", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "event_mapping", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "dedup_or_reattribution", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "postback_delay_or_failure", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "data_freshness", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "channel_mapping", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "privacy_attribution", "status": "needs_followup", "evidence_ids": [], "explanation": ""},
+    {"item": "invalid_traffic", "status": "not_supported", "evidence_ids": [], "explanation": ""}
   ],
   "claims": [],
   "next_actions": [],
@@ -1028,7 +1156,7 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 #### 4.3.6 输出 Schema
 
-- `checklist` 必须恰好覆盖九个注册项；缺项 Schema 后处理直接失败。
+- `checklist` 必须恰好覆盖九个注册项；A.8 Schema 强制 `minItems=maxItems=9`，代码再校验 item 集合与九项注册表完全相等且每项只出现一次，任一失败均不可交付。
 - `comparability.is_comparable=false` 时，`derived_differences` 只能包含标记 `display_only=true` 的原始值差，不得输出同口径业务结论。
 - `source_observations` 必须保留 source、time_window、timezone、event_definition_version 和 freshness。
 - `claims` 与 4.2 使用同一 Claim contract；`excluded_cause` 必须带反证与排除规则。
@@ -1060,6 +1188,8 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 
 #### 4.4.1 核心职责
 
+**系统定位：** 受 ACL、版本和有效期约束的知识回答器。质量优先级为“Grounding > 权限与时效正确性 > 问题覆盖率”；它是 `knowledge_lookup` 的唯一业务 Owner，不是另外两个诊断 Agent 必须串行调用的子 Agent。
+
 - 回答指标定义、归因口径、平台/MMP 规则和内部 SOP 等知识问题。
 - 生成检索后的引用回答；若问题包含具体账户诊断，返回重新路由。
 - 独立处理权威文档与已审核案例，不让案例污染权威知识。
@@ -1067,35 +1197,40 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 
 #### 4.4.2 输入、上下文与输出
 
-| 类型 | 字段 | 来源 | 必需 | 说明 |
-| --- | --- | --- | --- | --- |
-| 输入 | `route_final`、`user_query` | 总控 | 是 | 仅 `knowledge_lookup` |
-| 安全 | `auth_context` | IAM | 是 | 检索前过滤；不传完整敏感字段给模型 |
-| 检索 | `retrieved_chunks` | 权威知识检索 | 是 | 片段、版本、ACL、Owner、有效期 |
-| 案例 | `reviewed_cases` | 案例检索 | 否 | 脱敏、已审核、适用范围 |
-| 配置 | `knowledge_policy` | 知识策略服务 | 是 | 有效期、来源主题、冲突、注入与案例规则 |
-| 输出 | `knowledge_answer_draft_v2` | 本 Agent | 是 | 带引用回答或知识缺口 |
+| 层级 | 字段 | 产生方 | 是否进入生成模型 | 必需 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| Workflow 启动 | `workflow_task_envelope_v2`、`user_query` | 确定性路由层/原始快照 | 仅脱敏投影与原文 | 是 | 仅允许 `knowledge_lookup` Owner；计划引用已由路由层批准 |
+| 安全输入 | `auth_context` | IAM | 否 | 是 | 召回前过滤；完整身份和 scope 不传模型 |
+| 中间产物 | `knowledge_tool_envelope` | `search_knowledge_base` | 否 | 是 | 先经 ACL、有效期、审核状态、冲突和注入扫描 |
+| Synthesis 输入 | `knowledge_evidence_objects` | Evidence Builder | 是 | 是 | 由有效 Chunk 转换，含正文允许字段、来源、版本、Owner 与适用范围 |
+| Synthesis 输入 | `citations` | Citation Builder | 是 | 是 | `citation_id -> evidence_id -> chunk/source/version` 的确定性关系 |
+| Synthesis 输入 | `reviewed_cases` | `search_similar_cases` | 是 | 否 | 脱敏、已审核、`context_only`，不生成支持 Link |
+| Synthesis 输入 | `knowledge_policy` | 知识策略服务 | 是 | 是 | 有效期、来源主题、冲突、注入与案例规则 |
+| 模型输出 | `knowledge_answer_draft_v2` | 本 Agent | 不适用 | 是 | 带 proposed Evidence IDs、引用回答或知识缺口 |
+| 后处理产物 | `evidence_claim_bundles` | Claim Link Validator | 否 | 是 | 校验 Claim、Citation 与 Evidence 闭环后进入 Guard |
 
 #### 4.4.3 详细 Pipeline
 
-1. 总控生成 query retrieval plan，Agent 不再次自由扩展检索范围。
-2. 在召回前应用 tenant、role、document ACL、有效期、审核状态和 locale 过滤。
-3. 权威文档执行 BM25 + 向量混合召回与重排；案例从独立 Case Store 查询。
-4. 检查引用是否支持具体 claim，是否存在版本冲突或提示词注入。
-5. Agent 仅基于通过过滤的片段生成答案、适用范围、误区和下一步。
-6. 无权威引用时返回 `no_reliable_citation`；只有案例时只能给“相似案例检查建议”。
-7. 具体账户/数据问题返回 `reroute_required`，不能偷偷调用数据工具。
-8. 输出交付守卫，记录 query、召回、重排和知识版本。
+1. **[检索计划 Gate｜Workflow Engine]** 只解引用 Envelope 中经路由规则批准的 Retrieval Plan；Agent 不再次扩展 scope、工具或调用预算。
+2. **[ACL 预过滤｜Knowledge Gateway]** 在召回前应用 tenant、role、document ACL、有效期、审核状态和 locale；权限失败不泄露文档是否存在。
+3. **[双库召回与重排｜Retrieval Service]** 权威文档执行 BM25 + 向量混合召回与重排；案例从独立 Case Store 查询，产物分库存储。
+4. **[Evidence/Citation 构建｜Evidence Builder]** 有效 Chunk 先转换为 Knowledge Evidence；Citation Builder 生成 `citation_id -> evidence_id -> chunk/source/version`，案例固定为 `context_only`。
+5. **[引用、冲突与注入 Gate｜Validator]** 检查版本冲突、有效期、Claim 支持范围和提示词注入；不合格 Chunk 从模型上下文剔除并写审计。
+6. **[Grounded 生成｜知识与案例检索 Agent]** 仅基于 Knowledge Evidence 与合法 Citation 生成答案、适用范围、误区和下一步；事实 Claim 只填 proposed Evidence IDs。
+7. **[无答案分支｜Workflow Engine]** 无权威引用时返回 `no_reliable_citation` 并创建 knowledge gap；只有案例时只能给“相似案例检查建议”。
+8. **[重路由分支｜Workflow Engine]** 具体账户/数据问题返回 `reroute_required`；不得偷偷调用数据工具，新任务受 4.0.3 的重路由深度与用户确认约束。
+9. **[Claim-Evidence Gate｜Claim Link Validator]** 校验 Claim、Citation 和 Evidence 引用完整性；未验证 Link 不计入证据覆盖。
+10. **[守卫与审计｜Workflow Engine]** 输出交付守卫，记录原 Query、批准计划、召回、重排、过滤、Evidence、Citation 和知识版本。
 
 #### 4.4.4 技术与模型选型理由
 
-| 环节 | 初始方案 | 理由 | 校准方式 |
-| --- | --- | --- | --- |
-| Query 改写 | 总控轻量模型输出检索计划 | 统一路由与检索责任 | 检索 Golden Set |
-| 召回 | BM25 + 多语种向量 | 广告术语需精确匹配，问法又有语义变化 | Recall@K/MRR 对比 |
-| 向量候选 | `bge-m3` 作为初始实验候选 | 中英文混合与本地部署可评估 | 不达门槛则与其他候选盲测 |
-| 重排候选 | `bge-reranker-v2-m3` + 版本/权限规则 | 语义相关性外还需治理权重 | nDCG、引用准确率、延迟 |
-| 回答生成 | 标准模型 + 受限 context | 复杂口径需要解释 | Groundedness 与无答案拒答 |
+| 任务性质 | 初始方案 | 为什么适合 | 拒绝的方案及原因 | 切换/退出条件 |
+| --- | --- | --- | --- | --- |
+| Query 改写 | 总控轻量模型输出候选计划，路由规则批准后固化 | 把检索意图与唯一 Owner、权限和预算放在同一入口控制 | 知识 Agent 自由改写会扩大 scope；纯关键词难覆盖自然问法 | 检索 Golden Set 不达标时调模型/Prompt；规则批准与 Envelope 不取消 |
+| 精确词 + 语义召回 | BM25 + 多语种向量 | BM25 保留平台名、版本号、缩写等精确词，向量覆盖近义表达 | 纯 BM25 语义泛化弱；纯向量可能弱化版本号和精确术语 | 用 Recall@K/MRR 对比，任一路径无增益则在对应主题降权 |
+| 向量候选 | `bge-m3` 作为初始实验候选 | 可评估中英文混合与本地部署 | 不直接采用厂商结论或只看通用榜单 | 不达同集盲测门槛则与其他候选替换测试 |
+| 重排候选 | `bge-reranker-v2-m3` + 版本/权限规则 | 语义相关性之外还需把有效期、审核和治理信号纳入排序 | 用通用 LLM 全量重排成本/延迟高，且可能受文档注入 | nDCG、引用准确率、P95 或成本不达门槛时换候选/缩小候选集 |
+| 回答生成 | 标准模型 + 受限 Evidence Context | 复杂口径需要组织解释、适用范围和误区 | 把整篇文档塞入长上下文会提高泄露、注入与过期内容混用风险 | Groundedness、无答案拒答、注入压力集任一失败即回退引用模板或人工 |
 
 以上模型名称是实验候选，不是已验证生产选型。
 
@@ -1105,16 +1240,17 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 你是「AdOps Copilot」的知识与案例检索 Agent。你只能使用系统提供的已授权检索片段和已审核案例回答。
 
 输入变量：
-- route_final: {{route_final}}
+- workflow_task_context: {{workflow_task_context}}
 - user_query: {{user_query}}
-- retrieved_chunks: {{retrieved_chunks}}
+- knowledge_evidence_objects: {{knowledge_evidence_objects}}
+- citations: {{citations}}
 - reviewed_cases: {{reviewed_cases}}
 - knowledge_policy: {{knowledge_policy}}
 
 工作步骤：
 1. 若意图不是 knowledge_lookup，或问题要求分析具体账户数据，返回 reroute_required。
-2. 逐条检查 retrieved_chunks 的 review_status、effective_at、expires_at、owner 和 permission_status。
-3. 只用有效片段回答，并为每个事实性 claim 绑定 citation_id。
+2. 逐条检查 knowledge_evidence_objects 的 source_version、effective_at、owner、permission_scope 和 data_freshness；不得使用未通过前置过滤的对象。
+3. 只用有效 Knowledge Evidence 回答；每个事实性 Claim 填写 proposed_evidence_ids，citations 用 evidence_id 建立到 chunk/source/version 的可追溯关系。
 4. 说明答案适用的平台、MMP、地区、版本、时间与例外；没有信息时明确 unknown。
 5. 发现版本冲突时列出冲突来源，不自行裁决。
 6. reviewed_cases 只能写成“相似案例曾如何检查”，不得写成当前问题的事实。
@@ -1130,7 +1266,7 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 输出 JSON：
 {
   "schema_version": "knowledge_answer_draft_v2",
-  "status": "answered|no_reliable_citation|citation_conflict|reroute_required|human_review_required",
+  "status": "no_reliable_citation",
   "answer_summary": "",
   "claims": [],
   "citations": [],
@@ -1138,7 +1274,7 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
   "common_misunderstandings": [],
   "case_based_check_hints": [],
   "next_actions": [],
-  "knowledge_gap": null,
+  "knowledge_gap": {"query": "", "missing_topic": "", "suggested_owner": "", "required_authoritative_source": ""},
   "limitations": [],
   "requires_human_review": false,
   "badcase_tags": []
@@ -1148,7 +1284,7 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 #### 4.4.6 输出 Schema
 
 - 每个事实性 `claims[].proposed_evidence_ids` 必须指向 `source_type=knowledge` 的 Evidence Object，并由确定性验证器建立 `validation_status=validated` 的 `ClaimEvidenceLink`；否则该 claim 不可交付。
-- `citations` 至少含 `citation_id`、`source_id`、`chunk_id`、`source_version`、`owner`、`effective_at`、`retrieved_at`、`visibility` 与结构化 `applicability`。
+- `citations` 至少含 `citation_id`、`evidence_id`、`source_id`、`chunk_id`、`source_version`、`owner`、`effective_at`、`retrieved_at`、`visibility` 与结构化 `applicability`；代码验证 `citation.evidence_id` 与 Claim/Evidence Link 指向同一知识对象。
 - `case_based_check_hints` 必须含 `case_id`、`quality_status=reviewed`、`applicability` 和脱敏标记。
 - `knowledge_gap` 含 query、缺失主题、建议 Owner、所需权威来源，不能自动发布。
 
@@ -1176,9 +1312,16 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 
 ### 4.5 交付守卫
 
-交付守卫由**确定性策略内核**与**受限响应格式化 Agent**组成。策略内核拥有最终权限、证据、状态和人工门禁决策权；格式化 Agent 只能删减、排序和改写表达，不得新增 claim。
+交付守卫由**确定性策略内核**与**受限响应格式化 Agent**组成。策略内核拥有最终权限、证据、状态和人工门禁决策权；格式化 Agent 只能压缩重复措辞、排序和改写表达，不得新增或删除 canonical claim。
+
+| 组成 | 可以做 | 绝对不能做 | 失败回退 |
+| --- | --- | --- | --- |
+| 确定性策略内核 | 校验权限、数字、Evidence/Link、状态和人审条件，签发不可变 AllowedPayload | 自由生成业务解释、替用户补参数、修改上游 Claim | fail closed；只签发不含业务数据的最小失败 Payload |
+| 受限响应格式化 Agent | 排序、压缩重复、添加标题、按偏好转换语言和展示格式 | 新增/删除被允许的 Claim ID，改变数字、动作、证据、限制或状态 | 丢弃模型结果，使用确定性模板 |
 
 #### 4.5.1 核心职责
+
+**系统定位：** 独立质量裁决与发布闸门。质量优先级为“安全与状态不变量 > 失败可见性 > 表达可读性”；它是唯一最终放行者，总控不是终审节点。
 
 - 校验子 Agent JSON Schema、状态、数字忠实度和 claim-evidence 关系。
 - 计算 workflow completion、证据覆盖、新鲜度、来源权威、冲突和权限状态。
@@ -1188,39 +1331,42 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 
 #### 4.5.2 输入、上下文与输出
 
-| 类型 | 字段 | 来源 | 必需 | 说明 |
-| --- | --- | --- | --- | --- |
-| 输入 | `agent_draft` | 子 Agent | 是 | 结构化草稿 |
-| 输入 | `route_final` | 规则层 | 是 | 意图、权限与范围 |
-| 证据 | `evidence_objects`、`claims`、`links` | 证据存储 | 是 | 可验证关系 |
-| 状态 | `tool_runs`、`workflow_state` | 工作流引擎 | 是 | 工具与执行状态 |
-| 策略 | `delivery_policy` | 策略中心 | 是 | 因果词、客户可见、敏感字段、人审门槛 |
-| 输出 | `policy_guard_result_v2` | 确定性内核 | 是 | 最终状态和允许字段 |
-| 中间输出 | `allowed_payload` | 确定性内核 | 是 | 格式化 Agent 唯一可消费的白名单字段 |
-| 偏好 | `display_preferences` | 用户偏好服务 | 否 | 只影响语言与展示，不改变状态/证据 |
-| 输出 | `delivery_payload_v2` | 格式化 Agent | 是 | 前端可渲染内容 |
+| 层级 | 字段 | 来源 | 是否进入格式化模型 | 必需 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| 所有分支必需 | `route_final_v2`、`delivery_policy` | 确定性路由层/策略中心 | 否 | 是 | 权限、范围、澄清、唯一 Owner、状态优先级与策略版本的裁决依据 |
+| 所有分支必需 | `failure_context` | 路由规则/Workflow Engine | 否 | 是 | 可执行分支显式为 `null`；前置阻断时包含 stage、failure code、reason refs、missing fields 与 retryable，不含业务数据 |
+| 执行分支条件必需 | `workflow_task_envelope_v2`、`agent_draft` | 确定性路由层/业务 Agent | 否 | 条件必需 | 仅 `route_final.workflow_state=authorized` 后存在；不得为阻断分支伪造空对象 |
+| 执行分支条件必需 | `evidence_claim_bundles` | Evidence Store + Link Validator | 否 | 条件必需 | Claim、Evidence、validated/unvalidated Links 与 Verification Events |
+| 执行/恢复分支条件必需 | `tool_runs`、`workflow_checkpoint` | Workflow Engine | 否 | 条件必需 | 工具事实、执行状态、attempt、deadline 与恢复点；无工具的知识路径允许 `tool_runs=[]` |
+| Guard 输出 | `policy_guard_result_v2` | 确定性内核 | 否 | 是 | 最终状态、允许/隐藏引用、违规与 `allowed_payload_ref/hash` |
+| 不可变中间件 | `allowed_payload_v2` | 确定性内核 | 是 | 是 | 格式化 Agent 唯一业务输入；关闭字段 Schema 与 canonical hash |
+| 展示输入 | `display_preferences` | 用户偏好服务 | 是 | 否 | 只影响语言与展示，不改变状态、证据和权限 |
+| 最终输出 | `delivery_payload_v2` | 格式化 Agent + diff Validator | 不适用 | 是 | 通过第二次差分校验的前端可渲染内容 |
 
 #### 4.5.3 详细 Pipeline
 
-1. Schema 校验：拒绝未知字段、缺字段、非法枚举和数值类型漂移。
-2. 数值忠实校验：所有 observed/derived 数值必须与证据或规则结果一致。
-3. Claim 校验：主 claim 至少一个经验证的支持关系；数值/公式 link 由规则验证器校验，知识/候选原因 link 由语义 entailment 检查并按人工校准抽检。模型自报 evidence_id 只能是 proposed，`unvalidated` 不计入证据覆盖；confirmed claim 还需有效 Verification Event。
-4. 权限/可见校验：证据与输出必须落在 `auth_context`；V1 `customer_visible_allowed` 默认 false。
-5. 风险扫描：写操作、对外承诺、责任归属、合同/赔偿、敏感字段、注入与系统策略泄露。
-6. 状态映射：基于不变量生成唯一 `delivery_state`，并决定是否入人审队列。
-7. 允许字段投影：生成白名单 payload，隐藏不可见证据；隐藏不等于删除审计记录。
-8. 格式化 Agent 仅使用白名单 payload 生成标题、排序和简洁说明。
-9. 第二次 diff 校验：若格式化后出现新 claim/数字/动作，丢弃并使用确定性模板。
-10. 写入响应 hash、策略版本、审计和 Badcase 信号。
+1. **[分支 Gate｜Deterministic Guard Router]** 先校验 RouteFinal 与 failure context。`permission_blocked`、`out_of_scope`、`clarification_required`、前置 `system_error` 直接进入 `pre_execution_guard`，不要求或伪造 Envelope、AgentDraft、Bundle、Tool Run、Checkpoint。
+2. **[Schema Gate｜Contract Validator]** 仅对执行分支校验 Envelope、draft、Bundle、Tool Run 与 Checkpoint，拒绝未知字段、缺字段、非法枚举、引用断裂和数值类型漂移。
+3. **[数值忠实 Gate｜Numeric Validator]** observed/derived 数值必须与 Evidence 或规则结果一致；产物为可审计的 numeric validation result。
+4. **[Claim-Evidence Gate｜Link Validator]** 主 Claim 至少一个经验证的支持关系；数值/公式 Link 由规则确认，文本 Link 由受限 NLI/判定模型提出并用校准集设门槛。低于门槛、冲突或服务失败一律保持 `unvalidated`，不计入证据覆盖；confirmed Claim 还需有效 Verification Event。
+5. **[权限与可见 Gate｜IAM + Policy]** Evidence、Action 和输出必须落在当前 auth snapshot；V1 `customer_visible_allowed=false`。
+6. **[语义风险 Gate｜Rules + Safety Classifier]** 扫描写操作、对外承诺、责任归属、合同/赔偿、敏感字段、注入和系统策略泄露；任一高风险或判定服务不可用时 fail closed 或转人工。
+7. **[状态裁决｜Deterministic State Mapper]** 按 4.6.4 首个命中规则生成唯一 `delivery_state`，决定是否入人审队列，产出 `policy_guard_result_v2`。
+8. **[白名单投影｜Payload Builder]** 所有分支都生成关闭字段的 `allowed_payload_v2` 不可变 artifact 并写 canonical hash；前置阻断只含安全状态、通用说明与可执行下一步，claims/evidence 均为空。隐藏不可见 Evidence 不等于删除审计记录。
+9. **[受限格式化｜Formatter Agent]** 只读取 AllowedPayload artifact 与展示偏好，生成标题、排序和简洁说明。
+10. **[差分回检｜Payload Diff Validator]** 比较 canonical Claim/Action/Evidence ID 集、数字、限制和状态；出现新增、删除或改变时丢弃模型结果，使用确定性模板。
+11. **[审计闭环｜Trace Service]** 写入响应 hash、AllowedPayload hash、策略/模型版本、判定结果、人工队列与 Badcase 信号。
+
+Claim/Evidence 正反例见附件 A.6，机器合同以 A.8 为准；格式化 Prompt 中的 JSON 只作可读投影示例，不能覆盖 A.8 的 `AllowedPayload` 与 `DeliveryPayload` 定义。
 
 #### 4.5.4 技术与模型选型理由
 
-| 环节 | 方案 | 理由 | 失败兜底 |
-| --- | --- | --- | --- |
-| Schema/数值/权限/状态 | 确定性代码与策略引擎 | 必须可证明、可复算 | 失败即不交付 |
-| 语义风险检测 | 规则词典 + 安全分类模型 | 识别隐含承诺和责任定性 | 任一高风险信号转人工 |
-| 响应格式化 | 低温结构化生成模型 | 提升可读性 | 使用固定模板，不影响业务状态 |
-| 新增 claim 检测 | 输入输出 claim diff | 防止格式化模型补写事实 | 不一致时丢弃模型结果 |
+| 任务性质 | 初始方案 | 为什么适合 | 拒绝的方案及原因 | 切换/退出条件 |
+| --- | --- | --- | --- | --- |
+| Schema、数值、权限与状态 | 确定性代码 + 策略引擎 | 必须可证明、可复算并执行固定优先级 | 让 LLM 终判会产生不可复现放行与自审偏差 | 无模型替代；任何核心校验不可用即不交付 |
+| 文本 Link 与隐含风险 | 规则词典 + 受限 NLI/安全分类模型 | 规则覆盖确定红线，分类模型补充隐含语义 | 纯规则漏隐含承诺；生成模型自由评审可能补写理由 | 门槛按人工校准集设定；低置信、冲突或服务失败保持 unvalidated/转人工 |
+| 响应格式化 | 低温结构化生成模型 | 提升内部诊断卡可读性且可做关闭字段校验 | 直接把草稿交给模型重写会改变 Claim、数字与限制 | 结构化失败或 diff 不一致立即使用固定模板 |
+| 新增/删除内容检测 | canonical ID/数值/动作/状态 diff | 能精确发现格式化模型补写或隐去失败 | 仅做文本相似度会漏数值和状态变化 | 不一致即丢弃模型结果；无放宽路径 |
 
 #### 4.5.5 Prompt 正文
 
@@ -1228,21 +1374,21 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 你是「AdOps Copilot」的响应格式化 Agent。确定性策略内核已经完成权限、证据、风险和 delivery_state 判断。
 
 你的职责仅是：
-1. 按内部诊断卡顺序排列 allowed_payload。
+1. 按内部诊断卡顺序排列 allowed_payload_artifact。
 2. 把技术字段改写成清晰中文，但不得改变数值、单位、状态、证据、动作和限制。
 3. 在用户可见位置明确显示失败、冲突、证据不足和人工审核状态。
 
 输入变量：
 - policy_guard_result: {{policy_guard_result}}
-- allowed_payload: {{allowed_payload}}
+- allowed_payload_artifact: {{allowed_payload_artifact}}
 - display_preferences: {{display_preferences}}
 
 工作步骤：
-1. 原样保留 delivery_state、claims、evidence_id、next_actions 和 limitations；前端按 claim_type 分组展示。
+1. 原样保留 allowed_payload_artifact 中的 delivery_state、claims、evidence_refs、next_actions 和 limitations；前端按 claim_type 分组展示。
 2. 只可压缩重复表达、补充标题和排序。
 3. 不得新增 claim、数值、原因、证据、建议、责任对象或完成时效。
 4. delivery_state 不是 ready 时，首屏必须显示原因与下一步。
-5. customer_visible_allowed=false 时，必须标记“仅供内部使用”。
+5. internal_only=true 时，必须标记“仅供内部使用”。
 6. 只输出 JSON。
 
 硬性约束：
@@ -1253,7 +1399,7 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 输出 JSON：
 {
   "schema_version": "delivery_payload_v2",
-  "delivery_state": "",
+  "delivery_state": "partial_evidence",
   "internal_only": true,
   "title": "",
   "problem_and_scope": {"problem_statement": "", "intent": "", "object_scope_summary": "", "time_window": null, "display_timezone": null},
@@ -1269,7 +1415,7 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 
 #### 4.5.6 输出 Schema 与状态不变量
 
-`policy_guard_result_v2` 包含：`delivery_state`、`allowed_claim_ids`、`hidden_evidence_ids`、`evidence_dimensions`、`violation_codes`、`requires_human_review`、`review_queue`、`allowed_payload_hash`。
+`policy_guard_result_v2` 包含：`delivery_state`、`allowed_claim_ids`、`hidden_evidence_ids`、统一命名的 `evidence_dimensions`、`violation_codes`、`requires_human_review`、`review_queue`、`allowed_payload_ref` 与 `allowed_payload_hash`。`allowed_payload_v2` 是关闭字段、不可变、可按 hash 校验的独立 artifact；格式化器不得消费内核内存中的临时对象或自行按 Claim ID 回查更多字段。
 
 不变量：
 
@@ -1304,6 +1450,28 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 Badcase：`unsupported_claim_delivered`、`delivery_state_wrong`、`human_review_flag_mismatch`、`hidden_failure`、`customer_visibility_leak`、`formatter_added_claim`、`sensitive_field_exposed`。
 
 ### 4.6 工具、证据与状态公共契约
+
+第四部分的对象流只允许沿下列方向前进；箭头表示“后者引用并校验前者”，不表示可把完整对象无过滤地塞进模型上下文：
+
+```mermaid
+flowchart LR
+  R["RouteFinal"] --> W["WorkflowTaskEnvelope"]
+  R -->|澄清/权限/范围/系统阻断| PG["Pre-execution Guard"]
+  W --> Q["ToolRequest / RetrievalPlan"]
+  Q --> T["ToolEnvelope"]
+  T --> E["EvidenceObject"]
+  E --> PRE["预构建 observed/derived Claim\n+ validated input links"]
+  PRE --> D["AgentDraft\n含 proposed Evidence IDs"]
+  E --> L["Claim Link Validator"]
+  D --> L
+  L --> B["EvidenceClaimBundle\n+ VerificationEvent refs"]
+  B --> G["PolicyGuardResult"]
+  PG --> G
+  G --> A["AllowedPayload"]
+  A --> DP["DeliveryPayload"]
+```
+
+任何反向补写都必须创建新版本 artifact 和新 Trace span，禁止原地修改已签名的 Route、ToolEnvelope、Evidence、Verification Event 或 AllowedPayload。
 
 #### 4.6.1 Canonical Tool Registry
 
@@ -1422,12 +1590,12 @@ Evidence Builder 映射：`request_id -> source_id`、`tool_version -> source_ve
 ```json
 {
   "schema_version": "tool_envelope_v2",
-  "request_id": "req_xxx",
+  "request_id": "req_syn_platform_001",
   "tool_name": "get_platform_report",
   "tool_version": "2.0.0",
   "status": "success",
   "query_params_normalized": {
-    "request_id": "req_xxx",
+    "request_id": "req_syn_platform_001",
     "auth_context_ref": "auth_snapshot_demo_signed",
     "tenant_id": "tenant_demo",
     "account_id": "A_DEMO",
@@ -1452,7 +1620,7 @@ Evidence Builder 映射：`request_id -> source_id`、`tool_version -> source_ve
   "environment": "test",
   "data_origin": "synthetic",
   "training_allowed": false,
-  "policy_decision_id": "pd_xxx",
+  "policy_decision_id": "pd_syn_platform_001",
   "auth_snapshot_hash": "hmac-sha256:659b33585f84fc7c560b7ef97a47bde2ccbb04708ba600185750870a8d63b8ad",
   "result": {
     "metric_rows": [
@@ -1546,7 +1714,7 @@ Claim 与 Evidence 单独建模：
     "verification_event_id": null,
     "proposed_evidence_ids": ["ev_syn_attr_mmp_001"],
     "counter_evidence_or_gap": [],
-    "verification_action": null,
+    "verification_action_ids": [],
     "owner": null
   },
   "links": [
@@ -1597,6 +1765,34 @@ Claim 与 Evidence 单独建模：
 | Human review | `queued`、`assigned`、`in_review`、`approved`、`rejected`、`expired`、`resumed`、`closed` | `approved` 后从 checkpoint 进入 `resumed`，重新经过守卫 |
 | Badcase | `open`、`triaged`、`fixing`、`regression_pending`、`verified`、`closed`、`reopened` | regression 失败不得 closed |
 
+可执行分支的 `workflow_task_envelope_v2` 字段与不变量如下；`RouteFinal.workflow_state=blocked|clarification_required` 的分支不签发 Envelope，直接携带 RouteFinal 与 failure context 进入 Pre-execution Guard。
+
+| Envelope 字段 | 作用 | 不变量 |
+| --- | --- | --- |
+| `workflow_run_id`、`trace_id`、`request_snapshot_ref` | 绑定本次执行与原始请求 | 不得跨 trace 复用 |
+| `parent_trace_id`、`reroute_depth` | 记录显式重路由关系 | V1 `reroute_depth<=1`；新业务意图必须用户确认 |
+| `route_final_ref`、`route_final_hash` | 指向拥有执行权的不可变路由 | hash 不匹配立即阻断 |
+| `intent_final`、`owner`、`validated_entities` | 唯一任务和已确认字段 | Owner 必须与 Intent Registry 一致 |
+| `approved_retrieval_plan_refs` | 指向经 ACL/scope 审批的检索计划 | 工具只能解引用这些计划；不得自由扩展 |
+| `allowed_tools`、`max_tool_calls`、`max_retrieval_calls` | 工具和预算上限 | Workflow 只能收紧，不能扩大 |
+| `auth_context_ref`、`config_snapshot`、`workflow_version` | 绑定权限与全部关键资产版本 | 完整敏感权限不进入模型 |
+| `idempotency_key`、`attempt`、`deadline_at` | 控制重试、并发与超时 | 只对幂等临时错误重试；超过 deadline 停止 |
+| `checkpoint_id`、`workflow_state` | 支持人工恢复与状态机 | Checkpoint 必须引用不可变上游 artifact |
+| `integrity_hash` | 保护 Envelope 完整性 | 由服务端签发，模型不可构造 |
+
+| 当前 Workflow 状态 | 触发事件 | 执行 Owner | 必须产物 | 下一状态 | 失败/停止路径 |
+| --- | --- | --- | --- | --- | --- |
+| `intake` | 收到请求并完成 RouteFinal | 总控 + 路由规则 | 原始快照、RouteCandidate、RouteFinal | `authorized` 或 Pre-execution `guarding` | 不可执行分支不创建 Envelope/AgentDraft |
+| `authorized` | Envelope 签发 | Workflow Engine | `workflow_task_envelope_v2`、初始 checkpoint | `planning` | 失败转 `guarding`，携带 failure context |
+| `planning` | 解引用工具/检索计划 | Workflow Engine | 版本化调用 DAG | `collecting_evidence` | `guarding`（澄清/系统失败） |
+| `collecting_evidence` | 工具完成或预算耗尽 | Tool Gateway + Evidence Builder | Tool Envelopes、Evidence、工具状态 checkpoint | `calculating` 或 `synthesizing` | `guarding`（带失败状态） |
+| `calculating` | 确定性规则完成 | 语义层/对账规则层 | MetricAnalysis/Comparability、Derivation、预构建 Claim | `synthesizing` | `guarding`（带限制） |
+| `synthesizing` | AgentDraft 通过 Schema | 唯一业务 Agent + Link Validator | AgentDraft、EvidenceClaimBundle | `guarding` | `guarding`（带 Schema/Link 失败） |
+| `guarding` | 当前分支所需资产齐备 | Delivery Guard | PolicyGuardResult、所有状态均签发的安全 AllowedPayload | `completed` | Human Review `queued` |
+| Human Review `approved` | 人审批准恢复 | Workflow Engine | 原 checkpoint、新审核事件、`attempt+1` | 回到 `guarding` | `expired` / `rejected` |
+
+`workflow_checkpoint_v1` 至少记录 `checkpoint_id`、`workflow_run_id`、`trace_id`、状态、attempt、已完成 span、不可变 artifact refs、工具预算余量、deadline、创建时间和完整性 hash；恢复时重新校验当前权限与策略，不沿用过期 auth snapshot。
+
 交付状态按以下优先级裁决，首个命中即停止：
 
 | 优先级 | 条件 | Delivery state |
@@ -1612,11 +1808,13 @@ Claim 与 Evidence 单独建模：
 | 9 | `not_comparable`、部分工具成功、证据覆盖 partial | `partial_evidence` |
 | 10 | Schema、证据、权限、安全与完成度全部通过 | `ready` |
 
-特殊转换：`reroute_required` 不直接交付，返回 Workflow `planning` 由总控生成新 trace；若用户未确认新任务则 `clarification_required`。人审 `approved -> resumed` 后必须重新运行交付守卫，最终只能映射到上述 Delivery 状态之一。
+特殊转换：`reroute_required` 不直接交付。系统必须让用户确认新任务，再创建带 `parent_trace_id` 的子 Trace 和新 Envelope；V1 `reroute_depth<=1`，超过上限转人工，防止 Agent 间循环。用户未确认时为 `clarification_required`。人审 `approved -> resumed` 必须从 `workflow_checkpoint_v1` 恢复、重新校验当前 auth/policy、令 `attempt+1`，然后再次运行交付守卫；最终只能映射到上述 Delivery 状态之一。
 
 状态不变量与优先级由代码测试，不写进 Prompt 让模型决定。
 
 ### 4.7 支撑型确定性工作流
+
+这两类服务只消费已经存在且当前用户仍有权访问的 Trace/Response，不参与核心诊断链，不调用新的业务工具，也不新增业务 Claim。
 
 #### 4.7.1 升级摘要工作流
 
@@ -1899,6 +2097,7 @@ flowchart LR
 - case: {{golden_case}}
 - route_candidate: {{route_candidate}}
 - route_final: {{route_final}}
+- workflow_task_envelope: {{workflow_task_envelope}}
 - intent_registry: {{intent_registry}}
 - safety_policy: {{safety_policy}}
 
@@ -1928,6 +2127,9 @@ flowchart LR
 - case_and_formula_truth: {{golden_case}}
 - metric_analysis: {{metric_analysis}}
 - evidence_objects: {{evidence_objects}}
+- claim_evidence_links: {{claim_evidence_links}}
+- verification_events: {{verification_events}}
+- next_actions: {{next_actions}}
 - agent_output: {{agent_output}}
 - diagnosis_policy: {{diagnosis_policy}}
 
@@ -1945,7 +2147,7 @@ flowchart LR
   "judge_version": "performance_judge_v2",
   "pass": false,
   "blocking": false,
-  "dimension_scores": {"numeric_fidelity": 0, "checklist": 0, "grounding": 0, "causal_humility": 0, "action_safety": 0},
+  "dimension_scores": {"numeric_fidelity": 0, "metric_chain_coverage": 0, "grounding": 0, "causal_humility": 0, "action_safety": 0},
   "unsupported_claim_ids": [],
   "errors": [],
   "badcase_tags": [],
@@ -1960,10 +2162,13 @@ flowchart LR
 
 输入：
 - reconciliation_truth: {{golden_case}}
-- source_snapshots: {{source_snapshots}}
+- tool_envelopes: {{tool_envelopes}}
 - reconciliation_result: {{reconciliation_result}}
+- checklist_result: {{checklist_result}}
 - agent_output: {{agent_output}}
 - evidence_objects: {{evidence_objects}}
+- claim_evidence_links: {{claim_evidence_links}}
+- verification_events: {{verification_events}}
 
 检查：
 1. 口径不可比时是否只陈述原始数值不同，没有宣称真实差异根因。
@@ -1995,7 +2200,9 @@ flowchart LR
 
 输入：
 - query_and_relevance_truth: {{golden_case}}
-- retrieved_chunks: {{retrieved_chunks}}
+- knowledge_evidence_objects: {{knowledge_evidence_objects}}
+- citations: {{citations}}
+- claim_evidence_links: {{claim_evidence_links}}
 - reviewed_cases: {{reviewed_cases}}
 - agent_output: {{agent_output}}
 - knowledge_policy: {{knowledge_policy}}
@@ -2025,14 +2232,21 @@ flowchart LR
 输入：
 - expected_delivery: {{golden_case}}
 - route_final: {{route_final}}
-- agent_draft: {{agent_draft}}
+- failure_context: {{failure_context}}
+- workflow_task_envelope: {{workflow_task_envelope_optional}}
+- agent_draft: {{agent_draft_optional}}
+- tool_runs: {{tool_runs}}
+- workflow_checkpoint: {{workflow_checkpoint}}
+- claim_evidence_links: {{claim_evidence_links}}
+- verification_events: {{verification_events}}
 - policy_guard_result: {{policy_guard_result}}
+- allowed_payload_artifact: {{allowed_payload_artifact}}
 - delivery_payload: {{delivery_payload}}
 - evidence_objects: {{evidence_objects}}
 - delivery_policy: {{delivery_policy}}
 
 检查：
-1. delivery_state 是否与证据覆盖、冲突、权限、工具和人审条件一致。
+1. delivery_state 是否与 RouteFinal、failure context、证据覆盖、冲突、权限、工具和人审条件一致；非执行分支不得要求或伪造 Envelope/AgentDraft。
 2. 格式化前后是否新增/改变 claim、数值、动作或状态。
 3. 失败、限制和人工审核是否首屏可见。
 4. 是否泄露客户数据、内部策略或客户不可见证据。
@@ -2174,7 +2388,7 @@ Badcase 状态：`open -> triaged -> fixing -> regression_pending -> verified ->
 4. Regression：加入全链路样本和对应单元测试，跑受影响集 + 全量安全集。
 5. Verify：SME/安全按类型复核；JudgeAI 不能独立关闭 P0/P1。
 6. Close：记录修复版本、发布日期和 must-not-regress 条件。
-7. Reopen：相同症状再次出现时保留历史链路，重新评估是否根因判断错误。
+7. Reopen：相同问题表现再次出现时保留历史链路，重新评估是否根因判断错误。
 
 ### 7.6 威胁模型与控制
 
@@ -2534,7 +2748,7 @@ SFT 只是候选用途；只有在样本脱敏、授权、人工审核且证明 
     "verification_event_id": null,
     "proposed_evidence_ids": [],
     "counter_evidence_or_gap": [],
-    "verification_action": null,
+    "verification_action_ids": [],
     "owner": null
   },
   "links": [
@@ -2557,7 +2771,7 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
 | Tool status | `success`、`partial`、`timeout`、`permission_denied`、`invalid_params`、`unavailable`、`stale_cache` | 后端 |
 | Human review | `queued`、`assigned`、`in_review`、`approved`、`rejected`、`expired`、`resumed`、`closed` | 运营/安全 |
 | Badcase | `open`、`triaged`、`fixing`、`regression_pending`、`verified`、`closed`、`reopened` | AI PM |
-| 版本资产 | route Prompt、各 Agent Prompt、Judge、model、workflow、rule、tool schema、KB/index、delivery policy | 各资产 Owner |
+| 版本资产 | route Prompt、各 Agent Prompt、Judge、model、workflow、rule、tool schema、WorkflowTaskEnvelope/Checkpoint/FailureContext、KB/index、delivery policy、AllowedPayload | 各资产 Owner |
 
 上线前，注册表、Prompt 输入输出、Schema、文档术语与汇总版必须通过自动一致性扫描。
 
@@ -2593,6 +2807,23 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
       },
       "required": ["code", "field", "message_safe", "retryable"],
       "additionalProperties": false
+    },
+    "FailureContext": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "stage": {"enum": ["routing", "planning", "tool_execution", "evidence_building", "synthesis", "guarding"]},
+            "failure_codes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+            "reason_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+            "missing_fields": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+            "retryable": {"type": "boolean"}
+          },
+          "required": ["stage", "failure_codes", "reason_refs", "missing_fields", "retryable"],
+          "additionalProperties": false
+        },
+        {"type": "null"}
+      ]
     },
     "AuthInjected": {
       "type": "object",
@@ -2644,6 +2875,109 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "forbidden_scopes": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
       },
       "required": ["schema_version", "original_query", "normalized_topic", "entities", "exact_terms", "semantic_expansions", "knowledge_scopes", "locale", "effective_at", "must_include_metadata", "forbidden_scopes"],
+      "additionalProperties": false
+    },
+    "ConfigSnapshot": {
+      "type": "object",
+      "properties": {
+        "intent_registry_version": {"type": "string"},
+        "tool_registry_version": {"type": "string"},
+        "policy_version": {"type": "string"},
+        "prompt_bundle_version": {"type": "string"},
+        "knowledge_version": {"type": "string"}
+      },
+      "required": ["intent_registry_version", "tool_registry_version", "policy_version", "prompt_bundle_version", "knowledge_version"],
+      "additionalProperties": false
+    },
+    "WorkflowTaskEnvelope": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": "workflow_task_envelope_v2"},
+        "workflow_run_id": {"type": "string", "minLength": 1},
+        "trace_id": {"type": "string", "minLength": 1},
+        "request_snapshot_ref": {"type": "string", "minLength": 1},
+        "parent_trace_id": {"type": ["string", "null"]},
+        "reroute_depth": {"type": "integer", "minimum": 0, "maximum": 1},
+        "route_final_ref": {"type": "string", "minLength": 1},
+        "route_final_hash": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"},
+        "intent_final": {"enum": ["campaign_performance_diagnosis", "attribution_discrepancy_check", "knowledge_lookup", "case_escalation_summary", "feedback_badcase"]},
+        "owner": {"enum": ["performance_diagnosis_agent", "attribution_discrepancy_agent", "knowledge_retrieval_agent", "trace_summary_builder", "badcase_intake"]},
+        "validated_entities": {"type": "array", "items": {"$ref": "#/$defs/Entity"}},
+        "approved_retrieval_plan_refs": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "allowed_tools": {"type": "array", "uniqueItems": true, "items": {"enum": ["get_platform_report", "get_mmp_report", "get_postback_summary", "search_knowledge_base", "search_similar_cases"]}},
+        "max_tool_calls": {"type": "integer", "minimum": 0, "maximum": 5},
+        "max_retrieval_calls": {"type": "integer", "minimum": 0, "maximum": 2},
+        "auth_context_ref": {"type": "string", "minLength": 1},
+        "config_snapshot": {"$ref": "#/$defs/ConfigSnapshot"},
+        "workflow_version": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
+        "deadline_at": {"type": "string", "format": "date-time"},
+        "checkpoint_id": {"type": ["string", "null"]},
+        "workflow_state": {"enum": ["authorized", "planning", "collecting_evidence", "calculating", "synthesizing", "guarding"]},
+        "integrity_hash": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["schema_version", "workflow_run_id", "trace_id", "request_snapshot_ref", "parent_trace_id", "reroute_depth", "route_final_ref", "route_final_hash", "intent_final", "owner", "validated_entities", "approved_retrieval_plan_refs", "allowed_tools", "max_tool_calls", "max_retrieval_calls", "auth_context_ref", "config_snapshot", "workflow_version", "idempotency_key", "attempt", "deadline_at", "checkpoint_id", "workflow_state", "integrity_hash"],
+      "allOf": [
+        {"if": {"properties": {"reroute_depth": {"const": 0}}, "required": ["reroute_depth"]}, "then": {"properties": {"parent_trace_id": {"type": "null"}}}},
+        {"if": {"properties": {"reroute_depth": {"const": 1}}, "required": ["reroute_depth"]}, "then": {"properties": {"parent_trace_id": {"type": "string", "minLength": 1}}}}
+      ],
+      "additionalProperties": false
+    },
+    "WorkflowCheckpoint": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": "workflow_checkpoint_v1"},
+        "checkpoint_id": {"type": "string", "minLength": 1},
+        "workflow_run_id": {"type": "string", "minLength": 1},
+        "trace_id": {"type": "string", "minLength": 1},
+        "workflow_state": {"enum": ["authorized", "planning", "collecting_evidence", "calculating", "synthesizing", "guarding"]},
+        "attempt": {"type": "integer", "minimum": 1, "maximum": 2},
+        "completed_spans": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "artifact_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "remaining_tool_calls": {"type": "integer", "minimum": 0, "maximum": 5},
+        "remaining_retrieval_calls": {"type": "integer", "minimum": 0, "maximum": 2},
+        "deadline_at": {"type": "string", "format": "date-time"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "integrity_hash": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["schema_version", "checkpoint_id", "workflow_run_id", "trace_id", "workflow_state", "attempt", "completed_spans", "artifact_refs", "remaining_tool_calls", "remaining_retrieval_calls", "deadline_at", "created_at", "integrity_hash"],
+      "additionalProperties": false
+    },
+    "ContributionItem": {
+      "type": "object",
+      "properties": {
+        "driver": {"type": "string"},
+        "current_value": {"type": "number"},
+        "baseline_value": {"type": "number"},
+        "absolute_change": {"type": "number"},
+        "contribution_value": {"type": ["number", "null"]},
+        "contribution_unit": {"type": "string"},
+        "method": {"enum": ["log_change", "waterfall", "atomic_dimension"]},
+        "additive": {"type": "boolean"},
+        "sample_status": {"enum": ["sufficient", "insufficient", "not_applicable"]},
+        "evidence_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}}
+      },
+      "required": ["driver", "current_value", "baseline_value", "absolute_change", "contribution_value", "contribution_unit", "method", "additive", "sample_status", "evidence_ids"],
+      "additionalProperties": false
+    },
+    "MetricAnalysis": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": "metric_analysis_v2"},
+        "current_period": {"$ref": "#/$defs/TimeWindow"},
+        "baseline_period": {"$ref": "#/$defs/TimeWindow"},
+        "display_timezone": {"type": "string"},
+        "currency": {"type": ["string", "null"]},
+        "formula_version": {"type": "string"},
+        "quality_flags": {"type": "array", "items": {"type": "string"}},
+        "input_evidence_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
+        "observed_claims": {"type": "array", "items": {"$ref": "#/$defs/Claim"}},
+        "derived_claims": {"type": "array", "items": {"$ref": "#/$defs/Claim"}},
+        "contribution_breakdown": {"type": "array", "items": {"$ref": "#/$defs/ContributionItem"}},
+        "data_origin": {"enum": ["live_production", "deidentified_historical", "synthetic"]}
+      },
+      "required": ["schema_version", "current_period", "baseline_period", "display_timezone", "currency", "formula_version", "quality_flags", "input_evidence_ids", "observed_claims", "derived_claims", "contribution_breakdown", "data_origin"],
       "additionalProperties": false
     },
     "EntityTags": {
@@ -2806,6 +3140,8 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
     "NextAction": {
       "type": "object",
       "properties": {
+        "action_id": {"type": "string", "minLength": 1},
+        "related_claim_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string"}},
         "action": {"type": "string"},
         "action_type": {"enum": ["check", "manual_change", "escalate"]},
         "owner": {"type": "string"},
@@ -2813,7 +3149,7 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "expected_evidence": {"type": "array", "items": {"type": "string"}},
         "completion_condition": {"type": "string"}
       },
-      "required": ["action", "action_type", "owner", "precondition", "expected_evidence", "completion_condition"],
+      "required": ["action_id", "related_claim_ids", "action", "action_type", "owner", "precondition", "expected_evidence", "completion_condition"],
       "additionalProperties": false
     },
     "ChecklistItem": {
@@ -2831,6 +3167,7 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
       "type": "object",
       "properties": {
         "citation_id": {"type": "string"},
+        "evidence_id": {"type": "string"},
         "source_id": {"type": "string"},
         "chunk_id": {"type": "string"},
         "source_version": {"type": "string"},
@@ -2840,7 +3177,7 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "visibility": {"enum": ["internal", "internal_restricted"]},
         "applicability": {"$ref": "#/$defs/Applicability"}
       },
-      "required": ["citation_id", "source_id", "chunk_id", "source_version", "owner", "effective_at", "retrieved_at", "visibility", "applicability"],
+      "required": ["citation_id", "evidence_id", "source_id", "chunk_id", "source_version", "owner", "effective_at", "retrieved_at", "visibility", "applicability"],
       "additionalProperties": false
     },
     "CaseHint": {
@@ -2957,8 +3294,8 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
     },
     "PerformanceJudgeScores": {
       "type": "object",
-      "properties": {"numeric_fidelity": {"type": "integer", "minimum": 0, "maximum": 4}, "checklist": {"type": "integer", "minimum": 0, "maximum": 4}, "grounding": {"type": "integer", "minimum": 0, "maximum": 4}, "causal_humility": {"type": "integer", "minimum": 0, "maximum": 4}, "action_safety": {"type": "integer", "minimum": 0, "maximum": 4}},
-      "required": ["numeric_fidelity", "checklist", "grounding", "causal_humility", "action_safety"],
+      "properties": {"numeric_fidelity": {"type": "integer", "minimum": 0, "maximum": 4}, "metric_chain_coverage": {"type": "integer", "minimum": 0, "maximum": 4}, "grounding": {"type": "integer", "minimum": 0, "maximum": 4}, "causal_humility": {"type": "integer", "minimum": 0, "maximum": 4}, "action_safety": {"type": "integer", "minimum": 0, "maximum": 4}},
+      "required": ["numeric_fidelity", "metric_chain_coverage", "grounding", "causal_humility", "action_safety"],
       "additionalProperties": false
     },
     "AttributionJudgeScores": {
@@ -3244,6 +3581,9 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "owner": {"type": "string"},
         "observed_at": {"type": ["string", "null"], "format": "date-time"},
         "retrieved_at": {"type": "string", "format": "date-time"},
+        "effective_at": {"type": ["string", "null"], "format": "date-time"},
+        "expires_at": {"type": ["string", "null"], "format": "date-time"},
+        "applicability": {"oneOf": [{"$ref": "#/$defs/Applicability"}, {"type": "null"}]},
         "time_window": {"oneOf": [{"$ref": "#/$defs/TimeWindow"}, {"type": "null"}]},
         "display_timezone": {"type": ["string", "null"]},
         "dimensions": {"$ref": "#/$defs/DimensionMap"},
@@ -3294,14 +3634,14 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "verification_event_id": {"type": ["string", "null"]},
         "proposed_evidence_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "counter_evidence_or_gap": {"type": "array", "items": {"type": "string"}},
-        "verification_action": {"type": ["string", "null"]},
+        "verification_action_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "owner": {"type": ["string", "null"]}
       },
-      "required": ["claim_id", "claim_type", "statement", "verification_status", "derivation", "verification_event_id", "proposed_evidence_ids", "counter_evidence_or_gap", "verification_action", "owner"],
+      "required": ["claim_id", "claim_type", "statement", "verification_status", "derivation", "verification_event_id", "proposed_evidence_ids", "counter_evidence_or_gap", "verification_action_ids", "owner"],
       "allOf": [
         {"if": {"properties": {"claim_type": {"const": "observed_fact"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "observed"}}}},
         {"if": {"properties": {"claim_type": {"const": "derived_fact"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "computed"}, "derivation": {"$ref": "#/$defs/Derivation"}}}},
-        {"if": {"properties": {"claim_type": {"const": "candidate_cause"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "pending"}, "proposed_evidence_ids": {"minItems": 1}, "counter_evidence_or_gap": {"minItems": 1}, "verification_action": {"type": "string", "minLength": 1}, "owner": {"type": "string", "minLength": 1}}}},
+        {"if": {"properties": {"claim_type": {"const": "candidate_cause"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "pending"}, "proposed_evidence_ids": {"minItems": 1}, "counter_evidence_or_gap": {"minItems": 1}, "verification_action_ids": {"minItems": 1}, "owner": {"type": "string", "minLength": 1}}}},
         {"if": {"properties": {"claim_type": {"const": "confirmed_cause"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "confirmed"}, "verification_event_id": {"type": "string", "minLength": 1}}}},
         {"if": {"properties": {"claim_type": {"const": "excluded_cause"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "rejected"}, "proposed_evidence_ids": {"minItems": 1}, "counter_evidence_or_gap": {"minItems": 1}}}},
         {"if": {"properties": {"claim_type": {"const": "pending_check"}}, "required": ["claim_type"]}, "then": {"properties": {"verification_status": {"const": "pending"}}}}
@@ -3372,7 +3712,7 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "missing_fields_model_reported": {"type": "array", "items": {"type": "string"}},
         "risk_signals": {"type": "array", "items": {"type": "string"}},
         "route_to": {"enum": ["performance_diagnosis_agent", "attribution_discrepancy_agent", "knowledge_retrieval_agent", "trace_summary_builder", "badcase_intake", "master_agent"]},
-        "tool_intents": {"type": "array", "items": {"type": "string"}},
+        "tool_intents": {"type": "array", "uniqueItems": true, "items": {"enum": ["get_platform_report", "get_mmp_report", "get_postback_summary", "search_knowledge_base", "search_similar_cases"]}},
         "retrieval_plan": {"type": "array", "items": {"$ref": "#/$defs/RetrievalPlan"}},
         "clarification_question": {"type": "string"},
         "requires_human_review_candidate": {"type": "boolean"},
@@ -3392,7 +3732,7 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "calibration_version": {"type": "string"},
         "decision_reasons": {"type": "array", "minItems": 1, "items": {"type": "string"}},
         "owner": {"enum": ["performance_diagnosis_agent", "attribution_discrepancy_agent", "knowledge_retrieval_agent", "trace_summary_builder", "badcase_intake", "master_agent"]},
-        "required_fields_final": {"type": "array", "items": {"type": "string"}},
+        "missing_required_fields_final": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
         "permission_status": {"enum": ["allowed", "denied", "unknown"]},
         "scope_status": {"enum": ["in_scope", "out_of_scope"]},
         "workflow_state": {"enum": ["authorized", "clarification_required", "blocked"]},
@@ -3400,12 +3740,14 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "max_tool_calls": {"type": "integer", "minimum": 0, "maximum": 5},
         "requires_human_review": {"type": "boolean"}
       },
-      "required": ["schema_version", "trace_id", "intent_final", "classification_status", "classifier_version", "calibration_version", "decision_reasons", "owner", "required_fields_final", "permission_status", "scope_status", "workflow_state", "allowed_tools", "max_tool_calls", "requires_human_review"],
+      "required": ["schema_version", "trace_id", "intent_final", "classification_status", "classifier_version", "calibration_version", "decision_reasons", "owner", "missing_required_fields_final", "permission_status", "scope_status", "workflow_state", "allowed_tools", "max_tool_calls", "requires_human_review"],
       "allOf": [
         {"if": {"properties": {"classification_status": {"const": "ambiguous"}}, "required": ["classification_status"]}, "then": {"properties": {"intent_final": {"const": "unknown"}, "owner": {"const": "master_agent"}, "workflow_state": {"const": "clarification_required"}, "allowed_tools": {"maxItems": 0}, "max_tool_calls": {"const": 0}}}},
         {"if": {"properties": {"classification_status": {"const": "rejected"}}, "required": ["classification_status"]}, "then": {"properties": {"owner": {"const": "master_agent"}, "workflow_state": {"const": "blocked"}, "allowed_tools": {"maxItems": 0}, "max_tool_calls": {"const": 0}}}},
         {"if": {"properties": {"scope_status": {"const": "out_of_scope"}}, "required": ["scope_status"]}, "then": {"properties": {"owner": {"const": "master_agent"}, "workflow_state": {"const": "blocked"}, "allowed_tools": {"maxItems": 0}, "max_tool_calls": {"const": 0}}}},
-        {"if": {"properties": {"permission_status": {"enum": ["denied", "unknown"]}}, "required": ["permission_status"]}, "then": {"properties": {"owner": {"const": "master_agent"}, "workflow_state": {"const": "blocked"}, "allowed_tools": {"maxItems": 0}, "max_tool_calls": {"const": 0}}}}
+        {"if": {"properties": {"permission_status": {"enum": ["denied", "unknown"]}}, "required": ["permission_status"]}, "then": {"properties": {"owner": {"const": "master_agent"}, "workflow_state": {"const": "blocked"}, "allowed_tools": {"maxItems": 0}, "max_tool_calls": {"const": 0}}}},
+        {"if": {"properties": {"workflow_state": {"const": "authorized"}}, "required": ["workflow_state"]}, "then": {"properties": {"classification_status": {"const": "accepted"}, "permission_status": {"const": "allowed"}, "scope_status": {"const": "in_scope"}, "missing_required_fields_final": {"maxItems": 0}}}},
+        {"if": {"properties": {"missing_required_fields_final": {"minItems": 1}}, "required": ["missing_required_fields_final"]}, "then": {"properties": {"owner": {"const": "master_agent"}, "workflow_state": {"const": "clarification_required"}, "allowed_tools": {"maxItems": 0}, "max_tool_calls": {"const": 0}}}}
       ],
       "additionalProperties": false
     },
@@ -3417,7 +3759,23 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "problem_statement": {"type": ["string", "null"]},
         "answer_summary": {"type": ["string", "null"]},
         "comparability": {"oneOf": [{"$ref": "#/$defs/ComparabilityResult"}, {"type": "null"}]},
-        "checklist": {"type": "array", "items": {"$ref": "#/$defs/ChecklistItem"}},
+        "checklist": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {"$ref": "#/$defs/ChecklistItem"},
+          "allOf": [
+            {"contains": {"properties": {"item": {"const": "timezone"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "attribution_window"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "event_mapping"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "dedup_or_reattribution"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "postback_delay_or_failure"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "data_freshness"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "channel_mapping"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "privacy_attribution"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1},
+            {"contains": {"properties": {"item": {"const": "invalid_traffic"}}, "required": ["item"]}, "minContains": 1, "maxContains": 1}
+          ]
+        },
         "claims": {"type": "array", "items": {"$ref": "#/$defs/Claim"}},
         "citations": {"type": "array", "items": {"$ref": "#/$defs/Citation"}},
         "applicability": {"type": "array", "items": {"type": "string"}},
@@ -3437,6 +3795,29 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
       ],
       "additionalProperties": false
     },
+    "AllowedPayload": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"const": "allowed_payload_v2"},
+        "artifact_id": {"type": "string", "minLength": 1},
+        "artifact_hash": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"},
+        "trace_id": {"type": "string", "minLength": 1},
+        "delivery_state": {"enum": ["ready", "clarification_required", "human_review_required", "partial_evidence", "tool_degraded", "no_reliable_citation", "citation_conflict", "permission_blocked", "out_of_scope", "system_error"]},
+        "internal_only": {"const": true},
+        "problem_and_scope": {"$ref": "#/$defs/ProblemScope"},
+        "data_availability": {"type": "array", "items": {"$ref": "#/$defs/DataAvailability"}},
+        "claims": {"type": "array", "items": {"$ref": "#/$defs/Claim"}},
+        "evidence_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string"}},
+        "next_actions": {"type": "array", "items": {"$ref": "#/$defs/NextAction"}},
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "human_review": {"oneOf": [{"$ref": "#/$defs/HumanReviewView"}, {"type": "null"}]}
+      },
+      "required": ["schema_version", "artifact_id", "artifact_hash", "trace_id", "delivery_state", "internal_only", "problem_and_scope", "data_availability", "claims", "evidence_refs", "next_actions", "limitations", "human_review"],
+      "allOf": [
+        {"if": {"properties": {"delivery_state": {"enum": ["permission_blocked", "out_of_scope", "system_error"]}}, "required": ["delivery_state"]}, "then": {"properties": {"claims": {"maxItems": 0}, "evidence_refs": {"maxItems": 0}, "next_actions": {"maxItems": 0}}}}
+      ],
+      "additionalProperties": false
+    },
     "PolicyGuardResult": {
       "type": "object",
       "properties": {
@@ -3447,20 +3828,28 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
         "evidence_dimensions": {
           "type": "object",
           "properties": {
-            "coverage": {"enum": ["sufficient", "partial", "insufficient"]},
-            "freshness": {"enum": ["fresh", "acceptable", "stale", "unknown"]},
-            "authority": {"enum": ["authoritative", "mixed", "context_only", "unknown"]},
-            "conflict": {"enum": ["none", "resolved", "unresolved"]}
+            "workflow_completion": {"enum": ["complete", "partial", "blocked"]},
+            "evidence_coverage": {"enum": ["sufficient", "partial", "insufficient"]},
+            "evidence_freshness": {"enum": ["fresh", "acceptable", "stale", "unknown"]},
+            "source_authority": {"enum": ["authoritative", "reviewed", "context_only", "unknown"]},
+            "conflict_status": {"enum": ["none", "resolved", "unresolved"]},
+            "permission_status": {"enum": ["allowed", "denied", "unknown"]}
           },
-          "required": ["coverage", "freshness", "authority", "conflict"],
+          "required": ["workflow_completion", "evidence_coverage", "evidence_freshness", "source_authority", "conflict_status", "permission_status"],
           "additionalProperties": false
         },
         "violation_codes": {"type": "array", "items": {"type": "string"}},
         "requires_human_review": {"type": "boolean"},
         "review_queue": {"type": ["string", "null"]},
-        "allowed_payload_hash": {"type": "string"}
+        "allowed_payload_ref": {"type": "string", "minLength": 1},
+        "allowed_payload_hash": {"type": "string", "pattern": "^hmac-sha256:[0-9a-f]{64}$"}
       },
-      "required": ["schema_version", "delivery_state", "allowed_claim_ids", "hidden_evidence_ids", "evidence_dimensions", "violation_codes", "requires_human_review", "review_queue", "allowed_payload_hash"],
+      "required": ["schema_version", "delivery_state", "allowed_claim_ids", "hidden_evidence_ids", "evidence_dimensions", "violation_codes", "requires_human_review", "review_queue", "allowed_payload_ref", "allowed_payload_hash"],
+      "allOf": [
+        {"if": {"properties": {"evidence_dimensions": {"properties": {"permission_status": {"enum": ["denied", "unknown"]}}, "required": ["permission_status"]}}, "required": ["evidence_dimensions"]}, "then": {"properties": {"delivery_state": {"const": "permission_blocked"}, "allowed_claim_ids": {"maxItems": 0}}}},
+        {"if": {"properties": {"requires_human_review": {"const": true}}, "required": ["requires_human_review"]}, "then": {"properties": {"delivery_state": {"not": {"const": "ready"}}}}},
+        {"if": {"properties": {"delivery_state": {"const": "ready"}}, "required": ["delivery_state"]}, "then": {"properties": {"requires_human_review": {"const": false}, "evidence_dimensions": {"properties": {"workflow_completion": {"const": "complete"}, "evidence_coverage": {"const": "sufficient"}, "conflict_status": {"const": "none"}, "permission_status": {"const": "allowed"}}, "required": ["workflow_completion", "evidence_coverage", "conflict_status", "permission_status"]}}}}
+      ],
       "additionalProperties": false
     },
     "DeliveryPayload": {
@@ -3486,4 +3875,4 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
 }
 ```
 
-JSON Schema 之外仍需代码不变量：时间窗 start < end；查询涉及 spend/revenue 等货币指标时 `currency` 必须为非空 ISO 4217，纯计数查询可为 `null`；工具名与 result 类型匹配；`status=permission_denied` 时 result=null；`reviewed_case` link 只能 `context_only`；`derived_fact` 必须有 Derivation；`confirmed_cause` 必须有有效 VerificationEvent；Delivery 严格按 4.6.4 首个命中规则裁决，只有未命中更高优先级条件时 `requires_human_review=true` 才映射为 `human_review_required`；所有最终候选原因必须有经验证的 `supports` link；Evidence 的 tenant/policy/auth snapshot 必须与当前请求一致。`EvidenceClaimBundle` 还必须由代码验证引用完整性：每个 `link.claim_id` 等于 bundle Claim ID；link、Derivation 与 VerificationEvent 引用的 evidence ID 全部存在于同 bundle；VerificationEvent 的 claim ID、tenant、对象 scope 与时间窗必须和 Claim/当前请求一致，禁止跨 scope 拼接合法对象。
+JSON Schema 之外仍需代码不变量：时间窗 start < end；查询涉及 spend/revenue 等货币指标时 `currency` 必须为非空 ISO 4217，纯计数查询可为 `null`；工具名与 result 类型匹配；`status=permission_denied` 时 result=null；RouteCandidate 的工具还需满足 intent-specific allowlist；RouteFinal、WorkflowTaskEnvelope、RetrievalPlan、auth snapshot 和配置版本必须同 trace 且 hash 有效；只有 `RouteFinal.workflow_state=authorized` 可签发 Envelope，阻断分支不得伪造 Envelope/AgentDraft；Envelope 的 Owner 必须与 Intent Registry 一致，Workflow 只能收紧预算；九项 Checklist 的 item 集合必须与注册表完全相等且每项一次；`reviewed_case` link 只能 `context_only`；Citation 的 `evidence_id` 必须指向同一 chunk/source/version 生成的 Knowledge Evidence；`derived_fact` 必须有 Derivation；`confirmed_cause` 必须有有效 VerificationEvent；每个 `verification_action_ids` 必须指向同一 AgentDraft 中的 NextAction，且该 Action 的 `related_claim_ids` 反向包含当前 Claim；Delivery 严格按 4.6.4 首个命中规则裁决，只有未命中更高优先级条件时 `requires_human_review=true` 才映射为 `human_review_required`；所有最终候选原因必须有经验证的 `supports` link；Evidence 的 tenant/policy/auth snapshot 必须与当前请求一致；PolicyGuardResult 的 `allowed_payload_ref/hash`、`delivery_state` 必须与不可变 AllowedPayload artifact 完全一致，格式化前后 canonical Claim/Action/Evidence ID 集、数字、限制和状态完全一致。`EvidenceClaimBundle` 还必须由代码验证引用完整性：每个 `link.claim_id` 等于 bundle Claim ID；Link、Derivation 与 VerificationEvent 引用的 evidence ID 全部存在于同 bundle；VerificationEvent 的 claim ID、tenant、对象 scope 与时间窗必须和 Claim/当前请求一致，禁止跨 scope 拼接合法对象。
