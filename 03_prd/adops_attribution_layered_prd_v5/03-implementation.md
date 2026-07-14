@@ -46,11 +46,58 @@
 
 <a id="part-4"></a>
 
-## 第四部分：Agent 工作流、技术栈与实现
+## 第四部分：Agent 工作流、技术栈与实现（R&D 蓝图）
+
+> 本部分定义总控 Agent、三个业务子 Agent、交付守卫及其共享工具合同，重点回答四个研发问题：任务由谁处理、每一步如何推进、为什么采用当前技术组合、失败时在哪里停止或降级。第三部分负责描述用户侧主流程，本部分只展开内部执行机制，不新增 V1 业务范围。
+
+### 4.0 系统执行总览
+
+#### 4.0.1 五个核心角色
+
+| 角色 | 一句话定位 | 质量优先级 | 明确不负责 |
+| --- | --- | --- | --- |
+| 总控 Agent | 请求路由器与范围守门员 | 路由正确、权限与范围、低延迟 | 不调用工具、不计算指标、不判断业务根因 |
+| 投放效果诊断 Agent | 指标链路解释器 | 数字忠实、证据绑定、验证动作可执行 | 不自行算数、不执行投放变更 |
+| 归因差异核对 Agent | 跨源口径对账器 | 先可比、再算差异、最后解释 | 不读设备级日志、不做责任归属 |
+| 知识与案例检索 Agent | 有权限和版本约束的知识回答器 | 权威引用、适用范围、无答案拒答 | 不分析具体账户、不把案例当成当前事实 |
+| 交付守卫 | 独立质量与安全闸门 | 权限安全、状态准确、失败可见 | 不补写业务事实、不改变上游数字与结论 |
+
+一个业务请求只交给一个业务 Owner。总控负责生成候选路由，确定性规则完成权限、范围与工具终判；业务 Agent 只组织已授权、可追溯的事实和候选解释；最终结果统一经过交付守卫。模型负责理解与表达，确定性系统负责权限、公式、状态和放行。
+
+#### 4.0.2 端到端执行 Pipeline
+
+```mermaid
+flowchart LR
+  U["用户请求 + 页面上下文"] --> M["总控 Agent\n意图/字段/风险候选"]
+  M --> R["确定性路由规则\nroute_final"]
+  R -->|不可执行| B["澄清 / 阻断 / 人工路径"]
+  R -->|可执行| W["固定 Workflow\n只读工具与检索"]
+  W --> E["计算与 Evidence\n事实、差异、引用"]
+  E --> A["唯一业务 Agent\n结构化草稿"]
+  A --> G["交付守卫\n权限/证据/状态"]
+  G --> O["内部诊断卡或降级结果"]
+```
+
+这条主链路有三个不可跨越的 Gate：路由前不能扩权，生成前不能绕过确定性计算与 Evidence，交付前不能绕过守卫。具体字段、工具和状态仍以 4.1-4.6 的现有合同为准。
+
+#### 4.0.3 合成场景演练
+
+以下场景仅用于说明现有组件如何协作，数据复用附件 A.1.2，`data_origin=synthetic`，不代表真实生产结果。
+
+| 阶段 | 执行者 | 处理 | 可交付信息 |
+| --- | --- | --- | --- |
+| 接入 | 总控 Agent | 接收“核对平台 1,120、MMP 1,080 的安装差异”，保留 Campaign、事件、时间和时区 | 候选意图与缺失字段，不输出差异原因 |
+| 路由 | 确定性规则 | 校验权限、范围、字段与允许工具 | `attribution_discrepancy_check` 及唯一 Owner |
+| 取数 | 固定 Workflow | 分别读取平台与 MMP 聚合数据，保留各自口径和新鲜度 | 两个独立来源的原值，不互相覆盖 |
+| 计算 | 对账规则层 | 先判断可比性，再按既有公式计算绝对差值和差异率 | `absolute_gap=40`、`symmetric_gap_rate=3.5714%`、`directional_gap_rate_vs_mmp=3.7037%` |
+| 解释 | 归因差异核对 Agent | 组织两源事实、派生差异、九项核查状态与待验证项 | 没有 Verification Event 时不生成 `confirmed_cause` |
+| 交付 | 交付守卫 | 校验权限、证据、因果措辞和最终状态 | 只展示可证明内容，并明确缺口与下一步 |
 
 ### 4.1 总控 Agent
 
 #### 4.1.1 核心职责
+
+**系统定位：** 请求路由器与范围守门员。质量优先级为“路由正确 > 权限与范围正确 > 低延迟”，一句话记忆是“只决定去哪、能不能去，不负责业务诊断”。
 
 - 接收原始问题、页面上下文、强制 `auth_context` 和可选 `user_preferences`。
 - 保留用户事实，抽取意图、实体和字段来源；发现冲突时追问。
@@ -76,6 +123,8 @@
 
 #### 4.1.3 详细 Pipeline
 
+**阶段读法：** 接入与追踪 → 事实保真 → 上下文合并 → 权限预检 → 范围 Gate → 候选分类 → Schema Gate → 规则归一 → 路由委托 → Trace 记录。
+
 1. 创建 `trace_id`，保存原始输入和所有配置版本。
 2. 规范语言与时间表达；绝不修改数值、ID、国家、平台或用户明确口径。
 3. 合并页面上下文与已确认的 `conversation_slots`：保留 `value`、`source`、`observed_at`/`confirmed_at`；冲突字段进入 `slot_conflicts`。自由文本摘要只能作为 `context_only`。
@@ -88,6 +137,8 @@
 10. 记录路由延迟、token、模型、Prompt、规则和路由版本。
 
 #### 4.1.4 技术与模型选型理由
+
+**选型原则：** 总控是高频低延迟路径，先用结构化模型产生候选，再由确定性系统完成权限、范围与工具终判。
 
 | 环节 | 初始方案 | 理由 | 替代方案与退出条件 |
 | --- | --- | --- | --- |
@@ -206,6 +257,8 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 
 #### 4.2.1 核心职责
 
+**系统定位：** 证据驱动的指标链路解释器。质量优先级为“数字忠实 > 证据绑定 > 验证动作可执行”，一句话记忆是“解释哪里变了、哪些是贡献、下一步验证什么”。
+
 - 消费已通过权限与范围校验的投放异常任务。
 - 使用指标语义层输出的确定性计算和贡献拆解，不自行算数。
 - 结合权威 SOP 与已审核案例形成候选原因、反证/缺口和验证动作。
@@ -227,6 +280,8 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 
 #### 4.2.3 详细 Pipeline
 
+**阶段读法：** 准入校验 → 平台取数 → 下游补证 → 基线可比 Gate → 指标复算 → Driver Tree 拆解 → 维度贡献 → 知识/案例检索 → 结论分层 → 候选原因约束 → 人工 Gate → 返回守卫。
+
 1. 校验 `intent_final=campaign_performance_diagnosis`、权限和必填字段。
 2. 工作流调用 `get_platform_report`，`sections` 至少含 `metrics` 与允许的 `dimension_breakdown`；账户/审核/预算投放状态需要时请求 `delivery_status`。
 3. 若指标涉及安装或下游事件，按计划调用 `get_mmp_report`；工具结果不能互相覆盖。
@@ -241,6 +296,8 @@ Badcase：`intent_misroute`、`required_slot_missed`、`slot_conflict_overwritte
 12. 返回交付守卫；守卫失败时不得由本 Agent 自行改写绕过。
 
 #### 4.2.4 技术与模型选型理由
+
+**选型原则：** 确定性服务负责计算和数据质量，模型只基于已验证结果组织解释，避免把语言生成当作指标计算器。
 
 | 环节 | 初始方案 | 理由 | 风险与控制 |
 | --- | --- | --- | --- |
@@ -351,6 +408,8 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 #### 4.3.1 核心职责
 
+**系统定位：** 跨源口径与差异对账器。质量优先级为“可比性 > 差异复算 > 原因解释”，一句话记忆是“先判断能不能比，再判断差多少，最后讨论为什么”。
+
 - 核对平台与 MMP 的聚合事件数据是否具有可比口径。
 - 输出各源原值、对齐前后差异、固定九项核查状态和证据。
 - 区分“原始报表数值不同”“同口径差异成立”“候选原因”“已确认原因”。
@@ -371,6 +430,8 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 #### 4.3.3 详细 Pipeline
 
+**阶段读法：** 准入校验 → 双源取数 → Postback 补证 → 可比性 Gate → 差异计算 → 九项核查 → 权威规则检索 → 结论组织 → 人工 Gate → 返回守卫。
+
 1. 校验意图、account、app/campaign、事件、两种来源、时间范围、时区、MMP 和权限。
 2. 调用 `get_platform_report` 与 `get_mmp_report`；每个返回独立 snapshot、时区、刷新时间、事件口径和映射版本。
 3. 按需调用 `get_postback_summary`；只返回聚合成功、延迟、失败与拒收原因。
@@ -383,6 +444,8 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 10. 交付守卫过滤并生成内部核查卡。
 
 #### 4.3.4 技术与模型选型理由
+
+**选型原则：** 可比性和公式固化在规则层，模型只解释已校验的对账结果，确保分母、方向和口径不随表达变化。
 
 | 环节 | 初始方案 | 理由 | 风险与控制 |
 | --- | --- | --- | --- |
@@ -477,6 +540,8 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 
 #### 4.4.1 核心职责
 
+**系统定位：** 受权限、版本和有效期约束的知识回答器。质量优先级为“权威引用 > 适用范围 > 回答完整”，一句话记忆是“有可靠来源才回答，没有就暴露知识缺口”。
+
 - 回答指标定义、归因口径、平台/MMP 规则和内部 SOP 等知识问题。
 - 生成检索后的引用回答；若问题包含具体账户诊断，返回重新路由。
 - 独立处理权威文档与已审核案例，不让案例污染权威知识。
@@ -495,6 +560,8 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 
 #### 4.4.3 详细 Pipeline
 
+**阶段读法：** 检索计划 → ACL 预过滤 → 双库召回与重排 → 引用/冲突 Gate → Grounded 生成 → 无答案分支 → 重路由分支 → 返回守卫。
+
 1. 总控生成 query retrieval plan，Agent 不再次自由扩展检索范围。
 2. 在召回前应用 tenant、role、document ACL、有效期、审核状态和 locale 过滤。
 3. 权威文档执行 BM25 + 向量混合召回与重排；案例从独立 Case Store 查询。
@@ -505,6 +572,8 @@ Badcase：`raw_values_called_comparable`、`timezone_check_missed`、`window_che
 8. 输出交付守卫，记录 query、召回、重排和知识版本。
 
 #### 4.4.4 技术与模型选型理由
+
+**选型原则：** 先保证权限、版本、有效期和召回精度，再追求生成流畅度；回答完整不能替代引用可靠。
 
 | 环节 | 初始方案 | 理由 | 校准方式 |
 | --- | --- | --- | --- |
@@ -597,6 +666,8 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 
 #### 4.5.1 核心职责
 
+**系统定位：** 独立质量与安全闸门。质量优先级为“权限安全 > 状态准确 > 表达体验”，一句话记忆是“只放行可证明内容，不替上游补结论”。
+
 - 校验子 Agent JSON Schema、状态、数字忠实度和 claim-evidence 关系。
 - 计算 workflow completion、证据覆盖、新鲜度、来源权威、冲突和权限状态。
 - 阻断无证据强断言、客户承诺、责任归属、写操作、敏感信息和注入残留。
@@ -619,6 +690,8 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 
 #### 4.5.3 详细 Pipeline
 
+**阶段读法：** Schema Gate → 数值忠实 Gate → Claim-Evidence Gate → 权限/可见 Gate → 语义风险 Gate → 状态映射 → 白名单投影 → 受限格式化 → 差分回检 → 审计记录。
+
 1. Schema 校验：拒绝未知字段、缺字段、非法枚举和数值类型漂移。
 2. 数值忠实校验：所有 observed/derived 数值必须与证据或规则结果一致。
 3. Claim 校验：主 claim 至少一个经验证的支持关系；数值/公式 link 由规则验证器校验，知识/候选原因 link 由语义 entailment 检查并按人工校准抽检。模型自报 evidence_id 只能是 proposed，`unvalidated` 不计入证据覆盖；confirmed claim 还需有效 Verification Event。
@@ -631,6 +704,8 @@ Badcase：`citation_not_supporting_claim`、`stale_knowledge_used`、`unreviewed
 10. 写入响应 hash、策略版本、审计和 Badcase 信号。
 
 #### 4.5.4 技术与模型选型理由
+
+**选型原则：** 可证明的权限、证据、数值和状态判断固化在确定性内核，生成能力只负责白名单内容的受限格式化。
 
 | 环节 | 方案 | 理由 | 失败兜底 |
 | --- | --- | --- | --- |
