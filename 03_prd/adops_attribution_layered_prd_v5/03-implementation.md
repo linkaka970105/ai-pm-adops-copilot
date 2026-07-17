@@ -325,12 +325,15 @@ Badcase：`intent_misroute`、`multi_intent_missed`、`required_slot_missed`、`
 | --- | --- | --- | --- | --- |
 | 路由 | `route_final` | 总控规则层 | 是 | `schema_version=route_final_v3`；意图、权限、字段、允许工具 |
 | 输入 | `user_query` | 用户 | 是 | 经过总控保真传递的原文 |
-| 计算 | `metric_analysis` | 指标语义层 | 是 | 当前/基线、公式、贡献、质量状态 |
-| 证据 | `evidence_objects` | 证据存储 | 是 | 数据、规则和文档证据 |
-| 知识 | `retrieved_context` | 知识检索 | 是 | 指标口径与投放 SOP |
-| 案例 | `reviewed_cases` | 案例库 | 否 | 仅作检查方向 |
+| 上下文 | `conversation_slots` | 会话槽位服务 | 是 | 只读取总控已合并的 confirmed 值，用于构造工具参数；不是历史对话摘要，不直接作为模型事实 |
+| 内部结果 | `metric_analysis` | 指标语义层 | 是 | Workflow 内生成的当前/基线、公式、贡献和质量状态 |
+| 内部结果 | `evidence_objects` | Evidence Builder | 是 | 由工具结果、规则结果和知识片段转换的数据、规则及文档证据 |
+| 内部结果 | `retrieved_context` | 4.4 知识检索 | 是 | Workflow 依据异常指标构造检索请求后返回的指标口径与投放 SOP |
+| 内部结果 | `reviewed_cases` | 4.4 案例检索 | 否 | 脱敏且已审核，只补充检查方向 |
 | 配置 | `diagnosis_policy` | 工作流配置 | 是 | 必查项、因果词、动作边界 |
 | 输出 | `performance_diagnosis_draft_v2` | 本 Agent | 是 | 分层结论与下一步 |
+
+上表描述整个投放诊断 Workflow 的上下文，不代表全部字段都会传给模型。`conversation_slots` 和工具原始响应只用于请求构造、计算与审计；诊断模型只消费 4.2.6 明示的七个输入变量。
 
 #### 4.2.3 详细 Pipeline
 
@@ -343,6 +346,351 @@ Badcase：`intent_misroute`、`multi_intent_missed`、`required_slot_missed`、`
 **[诊断草稿生成]（Diagnosis Drafting）：** 诊断模型结合 `metric_analysis`、Evidence Objects、SOP 和案例，一次性生成已观察事实、派生事实、候选排查方向、证据缺口和验证动作；模型不得重新计算指标或把候选方向写成已确认根因。
 
 **[结果校验与返回]（Result Validation & Return）：** 普通程序校验 JSON Schema、Evidence ID 是否存在、数据范围是否一致、输出数字是否与指标结果相同，以及是否包含写操作、客户承诺或责任判断；校验通过后进入交付守卫，否则降级、阻断或转人工。本节点不调用 LLM，也不判断自然语言结论是否获得语义证明。
+
+##### 4.2.3.1 端到端数据处理示例
+
+以下为**合成规划样例**，用于解释投放诊断 Workflow 如何把一次 CPI 异常请求转换为可审计的诊断草稿，不代表真实生产结果。这里的 Workflow 是承接 `route_final_v3` 后执行只读工具调用、确定性计算、知识检索、Prompt 装配和停止/返回控制的编排程序，不重复判断权限、Owner 或 `authorized`。
+
+**1. 案例输入与已确认上下文**
+
+用户提问：
+
+> Campaign C_DEMO_123 昨天 CPI 从 10 美元涨到了 20 美元，帮我看下是什么原因。
+
+总控已经完成意图识别、槽位合并、相对时间解析、权限/范围校验和唯一 Owner 分配。4.2 接收的准入结果为：
+
+```json
+{
+  "schema_version": "route_final_v3",
+  "trace_id": "tr_20241217_001",
+  "intent_candidate": "campaign_performance_diagnosis",
+  "classification_status": "single_candidate",
+  "decision_reasons": ["required_fields_complete", "permission_allowed", "scope_allowed"],
+  "owner": "performance_diagnosis_agent",
+  "missing_required_fields": [],
+  "permission_status": "allowed",
+  "scope_status": "in_scope",
+  "workflow_state": "authorized",
+  "allowed_tools": ["get_platform_report", "get_mmp_report", "search_knowledge_base", "search_similar_cases"],
+  "max_tool_calls": 4,
+  "requires_human_review": false
+}
+```
+
+Workflow 同时从会话槽位服务读取以下 confirmed 值；字段来源继续保留在服务端槽位记录中，当前自然语言、页面上下文或历史 confirmed 值发生冲突时不会进入本流程：
+
+| 字段 | 已确认值 | 用途 |
+| --- | --- | --- |
+| `account_id` / `app_id` | `account_demo` / `app_demo` | 限定数据对象 |
+| `campaign_ids` | `C_DEMO_123` | 查询 Campaign |
+| `event_names` | `install` | 指标分母与 MMP 事件 |
+| `current_period` | `2024-12-15T16:00:00Z` 至 `2024-12-16T16:00:00Z` | Asia/Shanghai 的“昨天” |
+| `baseline_period` | `2024-12-14T16:00:00Z` 至 `2024-12-15T16:00:00Z` | 等长前一日基线 |
+| `display_timezone` / `currency` | `Asia/Shanghai` / `USD` | 展示与货币口径 |
+| `mmp` | `apps_flyer` | 安装数据来源 |
+
+**2. 端到端处理流程**
+
+```mermaid
+flowchart TD
+  A["已准入任务<br/>route_final + query + confirmed slots"] --> B["构造只读请求<br/>PlatformRequest + MmpRequest"]
+  B --> C1[["get_platform_report<br/>花费、曝光、点击、维度数据"]]
+  B --> C2[["get_mmp_report<br/>安装、事件口径、成熟度"]]
+  C1 --> D["Evidence Builder<br/>保留原值、范围、来源和版本"]
+  C2 --> D
+  D --> E["指标语义层<br/>可比性校验 + 版本化复算"]
+  E --> F{"可比且可计算？"}
+  F -->|否| F1["返回 partial_evidence<br/>不可计算指标项标记 not_computable"]
+  F -->|是| G["metric_analysis_v1<br/>周期变化 + Driver Tree + 维度异常"]
+  G --> H["retrieval_seed_v1<br/>异常指标 + Driver + 异常维度"]
+  H --> I["4.4 检索子流程<br/>Query Rewrite + ACL + 召回 + Rerank"]
+  I --> J["retrieved_context + reviewed_cases"]
+  A --> K["Prompt Assembler"]
+  D --> K
+  G --> K
+  J --> K
+  K --> L["投放诊断模型<br/>候选方向 + 缺口 + 验证动作"]
+  L --> M["确定性结果校验<br/>Schema + 引用 + 范围 + 数字 + 风险"]
+  M --> N["交付守卫"]
+  N --> O["内部诊断卡<br/>或降级 / 人工处理"]
+
+  classDef deterministic fill:#E8F1FF,stroke:#3B6FC4,color:#102A43;
+  classDef model fill:#FFF1D6,stroke:#C77A00,color:#5C3700;
+  classDef data fill:#E8F7EE,stroke:#2E8B57,color:#153D26;
+  classDef stop fill:#FDECEC,stroke:#C44B4B,color:#5A1F1F;
+  class B,D,E,F,G,H,K,M,N deterministic;
+  class I,L model;
+  class C1,C2,J data;
+  class F1,O stop;
+```
+
+**3. 只读工具请求与原始数据**
+
+由于 CPI 同时依赖广告平台花费和 MMP 安装数，Workflow 根据 confirmed slots 构造两个只读请求。平台请求直接携带当前期和基线期；MMP 请求覆盖连续 48 小时，由指标语义层按两个已确认周期切分。
+
+```json
+{
+  "request_id": "req_platform_001",
+  "auth_context_ref": "auth_ref_001",
+  "tenant_id": "tenant_demo",
+  "account_id": "account_demo",
+  "app_id": "app_demo",
+  "campaign_ids": ["C_DEMO_123"],
+  "event_names": ["install"],
+  "current_period": {"start_inclusive_utc": "2024-12-15T16:00:00Z", "end_exclusive_utc": "2024-12-16T16:00:00Z"},
+  "baseline_period": {"start_inclusive_utc": "2024-12-14T16:00:00Z", "end_exclusive_utc": "2024-12-15T16:00:00Z"},
+  "display_timezone": "Asia/Shanghai",
+  "currency": "USD",
+  "sections": ["metrics", "dimension_breakdown", "delivery_status"],
+  "dimensions": ["creative", "geo", "os"],
+  "environment": "test",
+  "data_origin": "synthetic"
+}
+```
+
+```json
+{
+  "request_id": "req_mmp_001",
+  "auth_context_ref": "auth_ref_001",
+  "tenant_id": "tenant_demo",
+  "mmp": "apps_flyer",
+  "app_id": "app_demo",
+  "campaign_ids": ["C_DEMO_123"],
+  "event_names": ["install"],
+  "time_window": {"start_inclusive_utc": "2024-12-14T16:00:00Z", "end_exclusive_utc": "2024-12-16T16:00:00Z"},
+  "display_timezone": "Asia/Shanghai",
+  "attribution_view": "event_time",
+  "environment": "test",
+  "data_origin": "synthetic"
+}
+```
+
+工具只返回数据与口径，不输出“CPI 上涨原因”。本案例的聚合结果为：
+
+| 数据 | 当前周期 | 基线周期 | 来源 |
+| --- | ---: | ---: | --- |
+| Spend | 12,000 USD | 10,000 USD | 平台 |
+| Impressions | 1,200,000 | 1,250,000 | 平台 |
+| Clicks | 24,000 | 25,000 | 平台 |
+| Installs | 600 | 1,000 | MMP |
+| Delivery status | active | 未返回历史快照 | 平台当前状态 |
+| Budget/Bid change log | 未返回 | 未返回 | V1 canonical tool 证据缺口 |
+| Data maturity | mature | mature | MMP quality flag |
+
+**4. Evidence 转换与可比性门禁**
+
+Workflow 不把整段工具响应直接交给模型，而是按 `evidence_object_v2` 生成可追溯 Evidence；正文只列索引，完整对象继续遵循 A.8 Schema：
+
+| Evidence ID | `source_type` | 内容范围 |
+| --- | --- | --- |
+| `ev_current_platform_001` | tool | 当前周期平台聚合指标与状态 |
+| `ev_baseline_platform_001` | tool | 基线周期平台聚合指标与状态 |
+| `ev_current_mmp_001` | tool | 当前周期安装数、事件版本与成熟度 |
+| `ev_baseline_mmp_001` | tool | 基线周期安装数、事件版本与成熟度 |
+| `ev_metric_analysis_001` | rule | 版本化指标、Driver Tree 与维度分析结果 |
+| `ev_knowledge_cvr_sop_001` | knowledge | 通过 ACL、版本和有效期过滤的 CVR 排查 SOP |
+
+在计算变化前，指标语义层先执行可比性门禁：
+
+| 检查项 | 本例结果 | 停止条件 |
+| --- | --- | --- |
+| 对象与周期 | 同一 Campaign；均为 24 小时 | 对象不同或周期不可对齐 |
+| 时区与币种 | Asia/Shanghai；USD | 任一不一致 |
+| Install 事件 | 同一 MMP 映射版本 | 事件定义冲突 |
+| 归因视图 | 两期均为 event_time | 视图或窗口冲突 |
+| 数据成熟度 | 两期均 mature | 当前期未成熟且不可校正 |
+| Campaign 状态 | 当前 active；基线历史快照缺失 | 不阻断数值比较；保留限制 |
+| 预算/出价变化 | V1 工具未返回历史变更日志 | 不阻断数值比较；不得据此排除配置变化 |
+
+任一阻断项命中时，Workflow 返回 `partial_evidence`，并将不可计算的指标项标记为 `not_computable`，不进入原因解释。
+
+**5. 版本化公式、Driver Tree 与维度分析**
+
+本案例使用的规则包是 PoC 规划合同，实际阈值需通过历史样本和数据团队评审校准：
+
+| 规则版本 | 公式 | 关键异常处理 |
+| --- | --- | --- |
+| `metric.ctr@2.1.0` | `clicks / impressions` | 分母为 0 => `not_computable` |
+| `metric.cpc@2.1.0` | `spend / clicks` | 分母为 0 或币种不一致 => 停止 |
+| `metric.click_install_cvr@1.3.0` | `installs / clicks` | 分母为 0 或事件版本冲突 => 停止 |
+| `metric.cpi@2.1.0` | `spend / installs` | 分母为 0 => `not_computable` |
+| `period_comparison@1.2.0` | `(current - baseline) / abs(baseline)` | baseline 为 0 => 不输出相对变化率 |
+| `driver.cpi@1.2.0` | `ln(current_cpc / baseline_cpc) - ln(current_cvr / baseline_cvr)` | 任一输入 <= 0 => 不做 Log Driver 拆解 |
+| `dimension_loss@1.0.0` | `current_volume × baseline_rate - actual_conversions` | 样本未过门槛 => 仅展示，不排序 |
+
+确定性复算结果为：
+
+| 指标 | 当前周期 | 基线周期 | 相对变化 |
+| --- | ---: | ---: | ---: |
+| CTR | 2.0% | 2.0% | 0% |
+| CPC | 0.50 USD | 0.40 USD | +25% |
+| Click-to-install CVR | 2.5% | 4.0% | -37.5% |
+| CPI | 20 USD | 10 USD | +100% |
+
+Driver Tree 使用 `CPI = CPC / Click-to-install CVR`：
+
+```text
+CPC Driver = ln(0.50 / 0.40) ≈ 0.223
+CVR Driver = -ln(0.025 / 0.040) ≈ 0.470
+合计 = 0.693 ≈ ln(20 / 10)
+```
+
+因此 CVR 下降的数学贡献更大，但 `causal_status=not_confirmed`；数学贡献不等于业务根因。
+
+Creative 维度继续得到：
+
+| 指标 | `creative_17` 当前周期 | 基线周期 |
+| --- | ---: | ---: |
+| Clicks | 8,000 | 7,000 |
+| Installs | 144 | 294 |
+| Click-to-install CVR | 1.8% | 4.2% |
+
+```text
+expected_installs = 8,000 × 4.2% = 336
+lost_installs_under_baseline_rate = 336 - 144 = 192
+```
+
+这只说明 `creative_17` 所在分组是优先核查维度，不能说明已经发生素材疲劳，因为仍缺少素材内容、展示频次、商店页变更和用户反馈证据。
+
+Workflow 将上述结果写入内部分析对象；以下是最小阅读视图，不新增外部 API：
+
+```json
+{
+  "schema_version": "metric_analysis_v1",
+  "analysis_id": "ma_001",
+  "comparability": {"status": "comparable", "blocking_mismatches": [], "data_maturity": "mature"},
+  "metric_results": [
+    {"metric_id": "cpi", "current_value": 20, "baseline_value": 10, "relative_change": 1, "rule_version": "metric.cpi@2.1.0"},
+    {"metric_id": "cpc", "current_value": 0.5, "baseline_value": 0.4, "relative_change": 0.25, "rule_version": "metric.cpc@2.1.0"},
+    {"metric_id": "click_to_install_cvr", "current_value": 0.025, "baseline_value": 0.04, "relative_change": -0.375, "rule_version": "metric.click_install_cvr@1.3.0"}
+  ],
+  "driver_tree": {
+    "target_metric": "cpi",
+    "method": "log_change",
+    "rule_version": "driver.cpi@1.2.0",
+    "causal_status": "not_confirmed",
+    "drivers": [{"metric_id": "cpc", "driver_delta": 0.223}, {"metric_id": "click_to_install_cvr", "driver_delta": 0.47}]
+  },
+  "dimension_analysis": [
+    {"dimension": "creative", "dimension_value": "creative_17", "affected_metric": "click_to_install_cvr", "lost_installs_under_baseline_rate": 192, "sample_status": "sufficient", "interpretation_level": "contribution_only"}
+  ],
+  "quality_flags": ["historical_delivery_change_unavailable"],
+  "rule_bundle_version": "performance_metric_rules@2.1.0"
+}
+```
+
+**6. 知识检索与 Prompt 装配**
+
+Workflow 根据目标指标、Driver、异常维度和质量状态生成内部检索种子：
+
+```json
+{
+  "schema_version": "retrieval_seed_v1",
+  "scenario": "campaign_performance",
+  "target_metric_ids": ["cpi"],
+  "driver_metric_ids": ["cpc", "click_to_install_cvr"],
+  "abnormal_dimensions": [{"dimension": "creative", "dimension_value_masked": "creative_17"}],
+  "quality_flags": ["historical_delivery_change_unavailable"],
+  "required_topics": ["cpi_definition", "cpc_increase_checks", "click_to_install_cvr_drop_checks", "creative_conversion_diagnosis"],
+  "allowed_knowledge_scopes": ["metric_definition", "campaign_performance_sop"],
+  "case_scenario": "campaign_performance"
+}
+```
+
+4.4 完成 Query Rewrite、ACL 过滤、召回和 Rerank 后，返回两个权威片段与一个 reviewed case：
+
+| 返回项 | 内容摘要 | 使用边界 |
+| --- | --- | --- |
+| `chunk_cpi_001` | CPI 定义及币种、时区、安装事件可比要求 | 支持指标定义和口径说明 |
+| `chunk_cvr_023` | CVR 下降时检查流量、素材承诺、商店页、应用状态和数据成熟度 | 支持生成检查动作 |
+| `case_creative_042` | CPI 上涨且 Creative CVR 下降的已审核历史案例 | 只提示检查顺序，不证明当前根因 |
+
+Prompt Assembler 传给模型的是完整对象而非 ID 列表：`route_final` 和 `user_query` 来自任务输入，`metric_analysis` 与 `evidence_objects` 来自确定性计算，`retrieved_context` 与 `reviewed_cases` 来自 4.4，`diagnosis_policy` 来自策略中心。原始 `conversation_slots` 和工具响应不重复传入模型。
+
+本例使用的策略配置为：
+
+```json
+{
+  "policy_version": "performance_diagnosis_policy@1.5.0",
+  "min_clicks": 1000,
+  "min_installs": 50,
+  "confirmed_cause_requires_verification_event": true,
+  "manual_change_requires_human_review": true
+}
+```
+
+**7. 诊断草稿、程序校验与最终诊断卡**
+
+模型生成的核心草稿为：
+
+```json
+{
+  "schema_version": "performance_diagnosis_draft_v2",
+  "status": "answered",
+  "problem_statement": "Campaign C_DEMO_123 当前周期 CPI 由 10 USD 上升至 20 USD。",
+  "claims": [
+    {
+      "claim_id": "cl_derived_cpi_001",
+      "claim_type": "derived_fact",
+      "statement": "CPI 较基线周期上升 100%。",
+      "verification_status": "computed",
+      "derivation": {"rule_id": "period_comparison", "rule_version": "period_comparison@1.2.0", "formula": "((current_spend/current_installs)-(baseline_spend/baseline_installs))/abs(baseline_spend/baseline_installs)", "input_evidence_ids": ["ev_current_platform_001", "ev_baseline_platform_001", "ev_current_mmp_001", "ev_baseline_mmp_001"], "precision": 6, "rounding": "ROUND_HALF_UP"},
+      "verification_event_id": null,
+      "proposed_evidence_ids": ["ev_metric_analysis_001"],
+      "counter_evidence_or_gap": [],
+      "verification_action": null,
+      "owner": null
+    },
+    {
+      "claim_id": "cl_derived_driver_001",
+      "claim_type": "derived_fact",
+      "statement": "CPC 上涨与 Click-to-install CVR 下降共同推高 CPI，其中 CVR 下降的数学贡献更大。",
+      "verification_status": "computed",
+      "derivation": {"rule_id": "driver.cpi", "rule_version": "driver.cpi@1.2.0", "formula": "ln(current_cpc/baseline_cpc)-ln(current_cvr/baseline_cvr)", "input_evidence_ids": ["ev_current_platform_001", "ev_baseline_platform_001", "ev_current_mmp_001", "ev_baseline_mmp_001"], "precision": 6, "rounding": "ROUND_HALF_UP"},
+      "verification_event_id": null,
+      "proposed_evidence_ids": ["ev_metric_analysis_001"],
+      "counter_evidence_or_gap": [],
+      "verification_action": null,
+      "owner": null
+    },
+    {
+      "claim_id": "cl_candidate_creative_001",
+      "claim_type": "candidate_cause",
+      "statement": "Creative 维度转化效率变化是当前建议优先验证的方向。",
+      "verification_status": "pending",
+      "derivation": null,
+      "verification_event_id": null,
+      "proposed_evidence_ids": ["ev_metric_analysis_001", "ev_knowledge_cvr_sop_001"],
+      "counter_evidence_or_gap": ["缺少素材内容与版本变更记录", "缺少展示频次和商店页变更证据", "V1 聚合工具未提供历史预算/出价变更日志"],
+      "verification_action": "检查 creative_17 的素材版本、展示频次、商店页一致性和分时段 CVR。",
+      "owner": "adops_operator"
+    }
+  ],
+  "next_actions": [
+    {
+      "action": "核查 creative_17 的素材及商店页一致性",
+      "action_type": "check",
+      "owner": "adops_operator",
+      "precondition": "获得已授权的素材配置和商店页信息",
+      "expected_evidence": ["素材版本", "商店页版本", "变更时间", "分时段 CVR", "展示频次"],
+      "completion_condition": "形成新的 Verification Event 或将该方向保留为待验证"
+    }
+  ],
+  "limitations": ["当前只能确认指标变化、数学贡献和异常维度，尚不能确认素材疲劳。", "V1 工具未提供历史预算/出价变更日志，不能据此排除配置变化。", "历史案例只用于确定检查顺序。"],
+  "requires_human_review": false,
+  "badcase_tags": []
+}
+```
+
+模型输出后不再调用第二个 LLM 判断证据关系。普通程序只执行 Schema、Evidence ID 存在性、租户/对象/时间范围、数字复算、Claim 类型约束和高风险动作校验，通过后交给交付守卫。最终内部诊断卡表达为：
+
+```text
+已确认的数据变化：CPI +100%，CPC +25%，Click-to-install CVR -37.5%，CTR 持平。
+指标贡献：CPC 上涨和 CVR 下降共同推高 CPI，其中 CVR 下降的数学贡献更大。
+优先核查方向：creative_17 所在分组 CVR 从 4.2% 降至 1.8%，但尚不能确认素材疲劳。
+下一步：检查素材版本、展示频次、素材与商店页一致性及分时段 CVR，再确认或排除候选方向。
+限制：V1 工具未提供历史预算/出价变更日志；历史案例不证明当前 Campaign 存在相同根因。
+```
 
 #### 4.2.4 模型参与边界
 
@@ -436,7 +784,7 @@ Badcase：`intent_misroute`、`multi_intent_missed`、`required_slot_missed`、`
 | --- | --- |
 | 平台工具超时 | 不补写指标；返回 `tool_degraded` 和手工取数字段 |
 | 当前/基线时区或币种不一致 | 阻断比较，进入 `partial_evidence` |
-| 分母为 0/值缺失 | 标记 `not_computable`，不得显示 0 或无穷大 |
+| 分母为 0/值缺失 | 指标项标记 `not_computable`，Agent 返回 `partial_evidence`；不得显示 0 或无穷大 |
 | 贡献维度样本过小 | 不排序候选原因，要求扩大样本或人工判断 |
 | 案例与当前数据冲突 | 案例降级为 context-only，标记冲突 |
 | 建议影响花费或客户 | `human_review_required`，只保留人工评估建议 |
