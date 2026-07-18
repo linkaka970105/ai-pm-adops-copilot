@@ -14,8 +14,7 @@
 - [第五部分：知识库架构与数据管线](#part-5)
 - [第六部分：AI 评估框架、数据集与发布门禁](#part-6)
 - [第七部分：安全兜底、Badcase 与人工接管](#part-7)
-- [第八部分：用户画像与个性化架构](#part-8)
-- [第九部分：成本、计量与性能](#part-9)
+- [第八部分：成本、计量与性能](#part-8)
 - [附件 A：合成数据集与功能验收样例](#appendix-a)
 
 <a id="reading-conventions"></a>
@@ -179,12 +178,12 @@ AdOps Copilot 是内嵌于移动广告投放后台的内部、只读、证据驱
 | 把相关性/贡献度说成因果 | 错误操作、错误归责 | 分层结论；因果词规则拦截；候选原因必须有支持与反证；SME 抽检 | 第四、六、七部分 | AI PM、SME |
 | 指标公式或口径错误 | 诊断方向整体错误 | 统一语义层、版本化公式、100% 单测；LLM 禁止自行计算 | 第四、五、六部分 | 数据工程 |
 | 数据源冲突或过期 | 给出过时/不一致结论 | 保留各源原值；标记时区、币种、窗口、新鲜度；冲突转人工 | 第四、五、七部分 | 数据、知识运营 |
-| 越权、跨租户或敏感泄露 | 严重合规与客户风险 | 检索前 ACL、工具网关 ABAC、字段脱敏、缓存隔离、审计、压力集 | 第五、七、八部分 | 安全、后端 |
-| 工具/数据不可用 | 模型补写结论 | 统一错误模型、有限重试、`tool_degraded`、禁止以旧快照冒充当前值 | 第四、七、九部分 | 后端、数据 |
+| 越权、跨租户或敏感泄露 | 严重合规与客户风险 | 检索前 ACL、工具网关 ABAC、字段脱敏、缓存隔离、审计、压力集 | 第五、七部分 | 安全、后端 |
+| 工具/数据不可用 | 模型补写结论 | 统一错误模型、有限重试、`tool_degraded`、禁止以旧快照冒充当前值 | 第四、七、八部分 | 后端、数据 |
 | 知识污染与提示词注入 | 绕过规则或传播错误知识 | 来源白名单、内容与指令分离、注入检测、发布审核和回滚 | 第五、七部分 | AI、知识运营 |
 | 客户沟通过度承诺 | 商务/法律风险 | V1 只交付内部摘要；客户可见字段默认 false；人工审批 | 第三、七部分 | 客户成功、合规 |
 | 模拟数据被当作生产结果 | 项目可信度受损 | 四类信息标签；所有样例统一带 `data_origin="synthetic"`；指标只写目标 | 第一部分、附件 | AI PM |
-| 成本/延迟不可控 | 体验和预算失败 | 模型分层、最大调用数、缓存、超时、配额、熔断和成本停止线 | 第九部分 | 后端、AI |
+| 成本/延迟不可控 | 体验和预算失败 | 模型分层、最大调用数、缓存、超时、配额、熔断和成本停止线 | 第八部分 | 后端、AI |
 
 <a id="part-1"></a>
 
@@ -578,6 +577,8 @@ flowchart TD
 | `C-11` | 前端不得把 `partial_evidence`、`citation_conflict` 或 `human_review_required` 渲染成成功结论 |
 | `C-12` | 所有附件数据都标记为合成样例，并能从输入重新计算期望结果 |
 
+<a id="part-4"></a>
+
 ## 第四部分：Agent 工作流、技术栈与实现（R&D 蓝图）
 
 > 本部分定义总控 Agent、三个业务子 Agent及其共享工具与响应合同，重点回答四个研发问题：任务由谁处理、每一步如何推进、为什么采用当前技术组合、失败时在哪里停止或降级。第三部分负责描述用户侧主流程，本部分只展开内部执行机制，不新增 V1 业务范围。
@@ -630,7 +631,7 @@ flowchart LR
 
 **系统定位：** 请求入口、任务编排与结果返回出口。质量优先级为“意图识别正确 > 执行准入正确 > 返回状态准确 > 低延迟”，一句话记忆是“模型理解用户想做什么，规则决定能否执行，业务 Workflow 产出并校验结果”。
 
-- 接收原始问题、页面上下文、强制 `auth_context` 和可选 `user_preferences`。
+- 接收原始问题、页面上下文和强制 `auth_context`。
 - 使用模型识别候选意图、提取候选槽位并发现冲突与风险信号。
 - 通过确定性规则校验槽位、权限、产品范围、风险条件和工具白名单。
 - 将满足执行条件的任务委托给唯一 Workflow Owner，并接收结构化结果。
@@ -645,8 +646,7 @@ flowchart LR
 | 上下文 | `page_context` | 投放后台 | 否 | 服务端签名 context_id，含 object scope、UI state version、observed_at；每字段携带来源 |
 | 上下文 | `confirmed_conversation_slots` | 会话槽位服务 | 否 | 服务端维护的结构化已确认字段，不是历史对话的自由文本总结 |
 | 上下文 | `recent_dialogue` | 会话服务 | 否 | 仅传入完成当前语义理解所需的有限轮次，不作为已确认事实 |
-| 安全 | `auth_context` | IAM/租户服务 | 是 | user、tenant、role、account scopes、knowledge scopes；与画像分离 |
-| 偏好 | `user_preferences` | 偏好服务 | 否 | 语言、时区显示、默认对比期；不得授予权限 |
+| 安全 | `auth_context` | IAM/租户服务 | 是 | user、tenant、role、account scopes、knowledge scopes；不得由模型生成或修改 |
 | 配置 | `intent_registry` | 配置中心 | 是 | 可识别意图、意图描述和多意图约束 |
 | 配置 | `slot_schema` | 配置中心 | 是 | 各意图的字段类型、枚举与必填规则 |
 | 配置 | `tool_registry_summary` | 工具网关 | 是 | 提供给模型的只读候选工具摘要，不代表授权调用 |
@@ -698,7 +698,7 @@ flowchart LR
 
 国外模型仅用于脱敏离线评测，或在满足数据策略时作为受控兜底，不自动接收生产账户与客户数据。
 
-模型价格以 2024 年末至 2025 年初公开价格为规划参考，详细成本估算统一放在第九部分。
+模型价格以 2024 年末至 2025 年初公开价格为规划参考，详细成本估算统一放在第八部分。
 
 官方事实来源：[阿里云百炼 Function Calling](https://help.aliyun.com/zh/model-studio/qwen-function-calling)、[阿里云百炼 2024 年价格调整](https://help.aliyun.com/zh/model-studio/qwen-model-billing-notice)、[DeepSeek API 更新记录](https://api-docs.deepseek.com/updates)、[DeepSeek JSON Output](https://api-docs.deepseek.com/guides/json_mode) 与 [OpenAI Structured Outputs](https://openai.com/index/introducing-structured-outputs-in-the-api/)。
 
@@ -3179,48 +3179,9 @@ Badcase 状态：`open -> triaged -> fixing -> regression_pending -> verified ->
 
 <a id="part-8"></a>
 
-## 第八部分：用户画像与个性化架构
+## 第八部分：成本、计量与性能
 
 ### 8.1 核心设计原则
-
-- `auth_context` 与用户画像完全分离：权限是强制且由 IAM 提供；画像是可选偏好，绝不授予数据访问权。
-- V1 只做任务必要的轻量个性化，不建立“隐性能力评分”或跨客户长期行为画像。
-- 默认最小化收集、用途限定、可查看/撤销/删除；真实会话默认不用于模型训练。
-- 个性化不能改变公式、证据、风险、交付状态和安全规则。
-
-### 8.2 数据对象
-
-| 对象 | 字段示例 | 来源 | 用途 | 保留原则 | 安全 |
-| --- | --- | --- | --- | --- | --- |
-| `auth_context` | tenant、user、role、account/app/knowledge scopes、expires_at | IAM | 权限终判 | 按会话短期缓存，遵循 IAM | 加密、不可被模型修改 |
-| `display_preferences` | language、display_timezone、number_format | 用户显式设置 | 展示 | 可随时修改/删除 | 不含业务权限 |
-| `task_defaults` | preferred_baseline_period、default_mmp | 用户显式设置 | 减少重复输入 | 需用户确认，按组织策略保留 | 每次在 UI 可见 |
-| `conversation_slots` | 当前 campaign/event/period | 当前 trace | 多轮任务连续性 | 任务关闭后按策略清理 | tenant 隔离、字段最小化 |
-| `feedback_profile` | 常用反馈类型的聚合计数 | 系统 | 优化体验与抽样 | 只保留聚合，不保留敏感原文 | 不用于权限/绩效判断 |
-
-具体保存天数由公司数据政策与业务必要性决定，属于待确认配置；本 PRD 不用无依据的 7/180 天作为生产事实。
-
-### 8.3 Agent 使用规则
-
-| 组件 | 可读取 | 可做 | 禁止 |
-| --- | --- | --- | --- |
-| 总控 | auth 摘要、显示偏好、当前任务槽位 | 路由、少追问、格式选择 | 推断新权限、跨租户记忆 |
-| 投放/归因 Agent | 已授权任务字段、显示偏好 | 解释相同证据的展示顺序 | 因用户经验不同改变事实/公式 |
-| 知识 Agent | knowledge scope、locale | 过滤知识、选择语言 | 读取无权限文档 |
-
-### 8.4 冷启动与撤销
-
-- 首次使用从页面上下文、IAM 和当前输入开始，不要求用户先填写复杂画像。
-- 默认对比期、时区或 MMP 不明确时展示候选并确认，不静默假设。
-- 用户可查看并重置显示/任务偏好；撤销后下一请求不得继续使用旧值。
-- 团队知识与个人偏好分开：个人纠正先进入 Badcase，不能直接改全局规则。
-- 离职、角色变化或 tenant 切换时，IAM 失效优先于任何缓存/记忆。
-
-<a id="part-9"></a>
-
-## 第九部分：成本、计量与性能
-
-### 9.1 核心设计原则
 
 - 成本按 trace、Agent、模型、token、检索、重排、工具和缓存拆分，不只看模型账单。
 - 轻量任务使用轻量模型；确定性代码能完成的任务不调用生成模型。
@@ -3228,7 +3189,7 @@ Badcase 状态：`open -> triaged -> fixing -> regression_pending -> verified ->
 - 超时、配额和预算是产品状态，必须对用户可见；不能为了“成功率”无限重试。
 - 成本目标均为合成预算假设，需用实际供应商与部署成本校准。
 
-### 9.2 计量、配额与限流
+### 8.2 计量、配额与限流
 
 每次调用记录：`trace_id`、tenant、agent、model_profile、prompt/input/output tokens、retrieval count、rerank count、tool calls、cache hit、latency、error、estimated_cost、delivery_state。
 
@@ -3243,7 +3204,7 @@ Badcase 状态：`open -> triaged -> fixing -> regression_pending -> verified ->
 
 轮次和配额均是实验配置，需要通过任务完成率与成本曲线校准。
 
-### 9.3 性能目标与降级
+### 8.3 性能目标与降级
 
 | 阶段/能力 | P95 规划目标 | 硬上限/超时 | 降级 |
 | --- | --- | --- | --- |
@@ -3256,7 +3217,7 @@ Badcase 状态：`open -> triaged -> fixing -> regression_pending -> verified ->
 
 性能测量从必填字段齐全且授权通过开始；等待用户补充和人工审核时间单独统计。
 
-### 9.4 模型与调用分层
+### 8.4 模型与调用分层
 
 | 任务 | 模型档位 | 单次预算假设 | 缓存/替代 |
 | --- | --- | --- | --- |
@@ -3268,7 +3229,7 @@ Badcase 状态：`open -> triaged -> fixing -> regression_pending -> verified ->
 
 模型不写死供应商。候选必须比较结构化输出、中文/英文广告术语、数值忠实、证据遵循、P95、数据合规、成本和故障切换。
 
-### 9.5 成本公式与预算示例
+### 8.5 成本公式与预算示例
 
 单次 trace 成本：
 
@@ -3298,7 +3259,7 @@ cost_per_effective_session = sum(cost_trace for all V1-eligible traces) / count(
 
 这些数字不是报价或真实成本。若实际成本连续一周超上限 20%，暂停扩量并定位模型、检索、工具重试或低价值长对话；不得用降低安全/证据门槛换成本。
 
-### 9.6 可用性、熔断与容量
+### 8.6 可用性、熔断与容量
 
 - 每个依赖独立熔断，不能因相似案例检索失败阻断核心数据诊断。
 - 平台/MMP 主数据源失败时不得用知识生成“看似完整”的诊断。
