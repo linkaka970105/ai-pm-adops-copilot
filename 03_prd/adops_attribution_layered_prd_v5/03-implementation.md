@@ -11,7 +11,7 @@
 | `01-decision.md` 1.4 | 证据先于结论；计算确定、解释生成；候选原因不等于根因 | 第四、五、六部分 |
 | `02-solution.md` 3.2 | 意图必须唯一路由，页面上下文有来源，多意图按依赖顺序拆分 | 第四部分 |
 | `02-solution.md` 3.3 | 固定工作流、分层结论、状态机和诊断卡合同 | 第四、七部分 |
-| `02-solution.md` 3.5 | 五个关键组件、五个 canonical 工具、异构知识、完整 Prompt/Judge、版本化回归 | 全文 |
+| `02-solution.md` 3.5 | 五个关键组件、六个 canonical 工具、异构知识、完整 Prompt/Judge、版本化回归 | 全文 |
 
 ## 公共契约与术语
 
@@ -1929,160 +1929,326 @@ Claim 通过 `proposed_evidence_ids` 直接引用 Evidence：
 
 <a id="part-5"></a>
 
-## 第五部分：知识库架构与数据管线
+## 第五部分：知识库架构与数据管线（R&D 蓝图）
+
+本部分定义 AdOps Copilot 从“知识来源登记”到“检索引用、版本发布和 Badcase 追溯”的完整生命周期。知识库不是一个包办所有数据的单一数据库：指标公式和映射是结构化规则，平台/MMP 文档与 SOP 是可检索知识，已审核案例是检查提示，Campaign 实时数据则必须通过 4.5 的只读工具生成 Evidence。
 
 ### 5.1 核心设计原则
 
-1. 按知识形态选存储，不把公式、配置、实时数据和文档全部向量化。
-2. 检索前做权限与有效期过滤；“先召回再遮罩”不可接受。
-3. 权威知识与历史案例分层，未经审核的聊天/工单不得成为强依据。
-4. 每条知识有 Owner、来源、版本、适用范围、生效/失效时间、ACL、审核状态和分用途授权（retrieval/generation/evaluation/training）。
-5. 工具结果只保存必要的聚合摘要、hash 与证据对象，不把敏感原始数据放进向量库。
-6. 任何知识、检索策略和映射变更都可回滚，并能关联 Badcase。
-7. 检索内容视为不可信数据，不能当作系统指令执行。
+1. **权威性与可追溯：** 每条知识必须有来源、Owner、版本、适用范围和审核状态；没有权威来源的内容只能作为 `context_only`，不能支持强 Claim。
+2. **按知识形态处理：** 公式、配置、文档、案例和实时数据分别使用结构化解析、层级切分、模板提取或只读工具，不采用“全部向量化”。
+3. **适用范围先于相似度：** 平台、MMP、事件、地区、OS、语言、生效时间不同，即使文本相似也不能合并为同一规则。
+4. **权限前置：** 租户、角色、文档 ACL、有效期和审核状态必须在召回前过滤；“先召回再遮罩”不可接受。
+5. **版本化治理：** 原始材料、解析产物、规则记录、索引和 Active Manifest 都不可变且可回滚；每次回答能追到实际使用的版本。
+6. **案例与事实分层：** 已审核案例只补充检查顺序和排障方向；当前 Campaign 的事实仍须来自本次会话的 Evidence Object。
+7. **检索内容不可信：** 文档正文只能作为数据，不能改变系统角色、扩展权限、选择工具或执行其中的指令。
+8. **参数必须经评测校准：** Chunk 长度、召回数量、Rerank 数量和相似度阈值都是 PoC 初始值，不包装成长期生产事实。
 
-### 5.2 智能 ETL 管线
+### 5.2 R&D 任务一：知识获取与智能 ETL
 
-| 阶段 | 输入 | 处理规则 | 输出 | 质量门槛 | Owner |
+知识 ETL 是知识库的生产线，必须可配置、可重跑，并能够从任一线上 Chunk 反查原始材料、解析规则和审核记录。
+
+#### 5.2.1 核心材料与资产清单
+
+| 资产族 | 主要消费者 | 核心材料 | 原始格式 | 权威 Owner | 目标形态 |
 | --- | --- | --- | --- | --- | --- |
-| 盘点 | SOP、平台/MMP 文档、指标字典、配置、案例 | 记录系统、责任人、授权、更新频率、用途 | source catalog | 无 Owner/授权的来源不接入 | 产品、治理 |
-| Extract | API、文件、人工上传 | 保留原始 hash、来源 URI、抓取时间与 ACL | immutable raw zone | 来源可追溯 | 数据平台 |
-| Clean | 文本、表格、工单 | 去重、格式化、PII/凭证/客户名脱敏、删除不可训练字段 | clean artifact | 脱敏抽检通过 | 数据、安全 |
-| Parse | 文档与结构数据 | 标题/表格/定义/实体/事件/关系解析 | chunks、records、relations | 结构完整率达标 | AI、数据 |
-| Validate | 待发布资产 | Owner 审核事实、版本、适用范围、ACL、客户可见、有效期及 retrieval/generation/evaluation/training 四类用途授权 | reviewed artifact | `review_status=approved` | SME、Owner |
-| Index | reviewed artifact | 写入对应存储、生成索引、记录版本 | staging KB | 检索/权限测试通过 | AI、后端 |
-| Release | staging KB | 运行 Golden/Regression/Injection/ACL 测试 | active version | Block 门槛全通过 | 产品、安全 |
-| Monitor | 引用与反馈 | 过期、低命中、冲突、Badcase、异常访问 | 修订/下架任务 | 责任队列有 SLA | 知识运营 |
+| K-1 指标与映射规则 | 4.2、4.3 | 指标字典、公式、事件定义、平台/MMP 字段映射、归因窗口、渠道映射 | SQL/CSV/JSON/YAML、配置快照 | 数据产品、归因数据 Owner | 关系表与版本化规则记录 |
+| K-2 权威文档与 SOP | 4.2、4.3、4.4 | 平台/MMP 正式文档、内部排障 SOP、指标说明、经审核 FAQ | PDF、HTML、Markdown、Word | 平台/MMP Owner、AdOps SME | 原文快照、层级 Chunk、BM25/向量索引 |
+| K-3 已审核案例 | 4.2、4.3；4.4 仅作提示 | 脱敏工单、复盘记录、已完成排障案例 | 工单导出、表单、JSON | AdOps SME、知识运营 | 结构化 Case Store、标签/向量索引 |
+| C-1 Workflow 与配置资产 | 总控及 4.2—4.4 Workflow | Intent Registry、Tool Registry、必查项、停止条件、状态转换 | JSON/YAML、关系表 | 产品、后端、安全 | 版本化 JSON/DAG 配置 |
+| D-1 实时/准实时业务数据 | 4.2、4.3 | 平台报表、MMP 报表、Postback 摘要、脱敏事件匹配 | 只读 API 回包 | 各数据源 Owner | Tool Envelope 与 Evidence Object，不进入知识索引 |
 
-ETL 禁止事项：把全量聊天直接嵌入、把工单“最终回复”当根因真值、从文档正文执行脚本/Prompt、丢失原 ACL、发布无 Owner 或无有效期的高风险口径。
+Phase 0/1 的首要产物不是“大量向量”，而是完整的 Source Catalog。每个来源至少登记：`source_id`、来源系统或 URI、Owner、权威主题、租户/角色 ACL、原始格式、更新触发方式、允许用途、保留策略和紧急联系人。无 Owner、无授权或无法确认版本的来源不得接入。
 
-### 5.3 异构知识与数据存储
+#### 5.2.2 通用 ETL 主链路
 
-#### 5.3.1 指标语义与配置字典
+| 阶段 | 输入 | 核心处理 | 产出或停止条件 | Owner |
+| --- | --- | --- | --- | --- |
+| 来源登记 | 待接入材料 | 确认来源、Owner、权威主题、ACL、更新方式和四类用途授权 | 生成 Source Catalog；信息不全则停止接入 | 产品、知识治理 |
+| 原文快照 | API、文件、人工上传 | 保存原始版本、抓取时间、来源 URI、内容 hash 和原 ACL | 写入 Immutable Raw Zone；来源不可追溯则失败 | 数据平台 |
+| 清洗脱敏 | 原文快照 | 去重、编码修复、去模板噪声、客户名/设备标识/凭证脱敏 | 生成 Clean Artifact；敏感信息抽检失败则隔离 | 数据、安全 |
+| 分类解析 | Clean Artifact | 按资产类型进入规则解析、文档切分、案例模板提取或配置校验 | 生成候选 records/chunks/cases；解析错误进入人工队列 | AI、数据 |
+| Owner 审核 | 候选资产 | 核对事实、适用范围、版本、ACL、有效期、可见性和用途授权 | `review_status=approved` 才能进入 Staging | SME、资产 Owner |
+| 索引构建 | Approved 资产 | 写入对应存储，构建 BM25/向量/标签索引并冻结索引清单 | 生成 Staging Version；索引数量或 hash 不一致则失败 | AI、后端 |
+| 发布门禁 | Staging Version | 运行检索、引用、冲突、注入、ACL 和 Regression Badcase Set | Block 门槛通过后切换 Active Manifest | 产品、安全 |
+| 运行监控 | 检索日志、引用、反馈 | 监控过期、低命中、冲突、异常访问和 Badcase | 创建修订、下架或回滚任务 | 知识运营 |
 
-- 存储：关系数据库/配置服务，不使用向量真值。
-- 内容：指标定义、公式、单位、币种、事件分子/分母、时间粒度、平台/MMP 字段映射、归因窗口、时区与版本。
+ETL 禁止事项：把全量聊天直接嵌入；把工单最终回复当作已确认根因；让模型自行决定公式、ACL 或生效时间；从文档正文执行脚本/Prompt；丢失原 ACL；自动发布无 Owner、无有效期或未审核的高风险知识。
+
+#### 5.2.3 分类型处理管线
+
+##### 管线 A：权威 PDF、HTML 与 SOP 文档
+
+**核心挑战：** 平台和 MMP 文档通常包含标题层级、参数表、限制条件、示例及版本说明。固定长度切分容易把“规则正文”和“适用条件”拆开。
+
+**处理策略：层级语义切分。**
+
+1. 布局解析：保留标题、正文、列表、表格、提示框和链接；扫描 PDF 无法稳定解析时进入 OCR/人工复核。
+2. 语义切分：优先以一个 H2/H3 主题、一个完整规则条目或一张独立表格作为 Chunk；表格必须保留表头和说明。
+3. 父级上下文补全：将文档标题和必要的父级标题前置到候选文本，避免检索结果失去“属于哪个平台、哪个规则”的上下文。
+4. 元数据注入：绑定 `source_id`、`source_version`、Owner、`knowledge_scope`、Applicability、`effective_at`、`expires_at`、ACL、审核状态和完整性 hash。
+5. 质量抽检：检查标题路径、表格完整性、数字/单位、链接和原文定位；不合格 Chunk 不进入索引。
+
+初始 Chunk 可从 400—700 tokens、约 10% overlap 开始实验；定义、限制和例外优先保持同块。该参数只用于 PoC 校准，最终以 Recall@K、引用准确率、表格问答集、延迟和成本决定。
+
+##### 管线 B：指标、事件与归因映射规则
+
+**核心挑战：** 公式和映射是精确规则，不适合依赖语义相似度，也不能让 LLM 从自然语言中直接生成生产真值。
+
+**处理策略：结构化规则导入与确定性校验。**
+
+1. 从指标字典、配置中心或 Owner 提交表单读取 `metric_id`、公式、分子/分母、单位、币种、事件、来源字段和适用范围。
+2. 解析系统只生成候选映射；公式、事件定义和生效时间由 Owner 审核。
+3. 规则编译器检查字段存在性、循环依赖、零分母处理、单位/币种一致性和有效期重叠。
+4. 使用历史合成样本和 Golden Set 复算；通过后生成不可变 `rule_version` 并切换 Active Pointer。
+5. 4.2/4.3 通过精确 ID、字段或版本查询规则；模糊命中只能触发澄清，不能直接参与计算。
+
+##### 管线 C：已审核排障案例
+
+**核心挑战：** 工单和复盘记录混有客户标识、未验证判断、沟通话术及最终解决动作，不能整篇入库并当作事实。
+
+**处理策略：结构化案例模板提取。**
+
+1. 脱敏：移除客户名、账户 ID、设备标识、Token、原始 URL 和不必要的自由文本。
+2. 模板提取：离线候选解析复用 4.2/4.4 已评测通过的结构化候选抽取模型，将材料提取为 `scenario`、`symptom`、`checks_performed`、候选/确认原因、`resolution`、Evidence 引用、Applicability 和失效条件；失败时由知识运营手工录入。
+3. 证据核对：只有存在 Verification Event 或 SME 明确确认时，才能写入 `root_cause_status=confirmed`；其余标记 candidate 或 unresolved。
+4. SME 审核：确认脱敏、检查步骤、结论级别、适用范围和有效期后发布。
+5. 双索引：关系表保存结构化字段和审核链，标签/向量索引只用于找相似场景。
+
+案例召回结果始终携带 `context_only=true`。它可以告诉 Agent“优先检查什么”，但不能证明当前 Campaign 存在同样原因。
+
+##### 管线 D：简单 HTML 与平文材料
+
+没有稳定标题层级的短 FAQ 或运营说明先清洗 DOM，再按段落和列表切分；层级解析收益不足时才使用递归字符切分作为兜底。初始 overlap 和 Chunk 长度同样需要通过专用检索集校准，不能因为实现简单就覆盖管线 A。
+
+ETL 的 AI 边界：布局解析/OCR只恢复文档结构；LLM 只生成案例或文档元数据候选，不决定公式、ACL、生效时间、审核状态或知识等级。所有候选字段必须通过 Schema、敏感信息扫描和 Owner/SME 审核后才能发布。
+
+#### 5.2.4 Embedding 与索引构建
+
+- 仅 K-2 文档 Chunk 和 K-3 案例提示需要向量索引；K-1 规则和 C-1 Workflow 配置使用精确查询，D-1 实时数据通过工具访问。
+- Embedding、Reranker 与国外质量基准沿用 4.4.5 的模型选型，本章不新增模型清单。
+- 每个索引版本必须记录：Embedding 模型快照、向量维度、距离方式、分词/BM25 配置、Chunk 策略版本、源资产清单、构建时间和完整性 hash。
+- 更换 Embedding、Chunk 策略或关键元数据时必须重建索引并重跑检索回归；不得对现有向量静默热切换。
+- 权威知识与案例分索引，召回、阈值和发布门禁分别评估，避免高相似案例挤占正式规则。
+
+#### 5.2.5 ETL 质量门槛
+
+以下均为 PoC 规划门槛，需在 Phase 0/1 用真实可授权材料校准：
+
+| 指标 | 规划门槛 | 阻断条件 |
+| --- | ---: | --- |
+| 来源、Owner、ACL、版本可追溯率 | 100% | 任一关键字段缺失 |
+| Critical Definition 双人审核覆盖率 | 100% | 未双审不得发布 |
+| Chunk 必需元数据完整率 | >= 99% | 低于门槛不得切 Active |
+| 表格表头与数字保真率 | >= 95% | 指标/窗口等关键表格错误直接 Block |
+| 案例敏感字段泄露率 | 0 | 任一泄露立即隔离 |
+| 索引记录数与发布清单一致率 | 100% | 数量或 hash 不一致 |
+| Staging ACL/跨租户泄露率 | 0 | 任一泄露禁止发布 |
+
+### 5.3 R&D 任务二：异构存储与事实边界
+
+#### 5.3.1 存储与消费总览
+
+| 资产 | 存储 | 查询方式 | 主要消费者 | 可以支持 | 不能支持 |
+| --- | --- | --- | --- | --- | --- |
+| 指标语义与映射规则 | 关系数据库/配置服务 | 精确 ID、字段、版本查询 | 4.2、4.3 | 公式、口径、事件和映射的确定性计算 | 依靠相似度猜测公式 |
+| Workflow DAG | 关系表 + 版本化 JSON/DAG | Intent/版本精确加载 | 总控、4.2—4.4 Workflow | 工具顺序、必查项、停止条件 | 业务事实和根因 |
+| 权威文档与 SOP | 对象存储 + BM25 + VectorDB | ACL 后混合召回与 Rerank | 4.2、4.3、4.4 | 定义、规则、适用范围和检查动作 | 当前 Campaign 实时事实 |
+| 已审核案例 | Case Store + 标签/向量索引 | 结构化过滤 + 相似案例召回 | 4.2、4.3；4.4 仅作提示 | 检查方向和经验顺序 | 当前原因或责任归属 |
+| 实时/准实时数据 | 源系统 + Evidence Store | 4.5 只读工具 | 4.2、4.3 | 当前数据事实、派生计算和验证 | 长期知识或跨租户训练语料 |
+
+#### 5.3.2 指标语义与配置字典
+
+- 内容：指标定义、公式、单位、币种、事件分子/分母、时间粒度、平台/MMP 字段映射、归因窗口、时区和版本。
 - 关键字段：`metric_id`、`formula_expression`、`numerator`、`denominator`、`event_name`、`source_field`、`effective_at`、`owner`、`rule_version`。
-- 查询：精确 ID/字段匹配；任何模糊命中只生成待确认，不直接用于计算。
-- 回滚：公式/映射版本不可变，active pointer 切换；变更必须跑历史样本。
+- 查询：精确 ID、字段和有效时间匹配；任何模糊命中只生成待确认。
+- 版本：记录不可变；Active Pointer 只切换当前生效版本，历史 Trace 继续引用原版本。
 
-#### 5.3.2 诊断工作流 DAG
+#### 5.3.3 诊断 Workflow DAG
 
-- 存储：关系表 + 版本化 JSON/DAG 配置。
 - 内容：意图、必填字段、允许工具、调用顺序、九项清单、停止条件、状态转换和人工门禁。
-- 选择理由：V1 图结构规模有限，用关系/DAG 比引入 GraphDB 更易审计和回滚。
-- GraphDB 进入条件：出现跨场景多跳关系，且关系数据库方案在真实任务上显著降低召回/解释质量；必须先做对照实验。
+- 选择关系表 + 版本化 JSON/DAG，是因为 V1 节点有限、查询路径固定，更易审计和回滚。
+- 只有出现稳定的跨场景多跳关系，并且对照实验表明关系表方案明显限制任务质量时，才评估 GraphDB；不因“关系看起来像图”直接增加数据库。
 
-#### 5.3.3 权威文档知识库
+#### 5.3.4 权威文档知识库
 
-- 存储：原文对象存储 + BM25 索引 + VectorDB。
-- 来源：已授权的内部 SOP、平台/MMP 正式文档、指标说明、归因规则和经审核 FAQ。
-- 初始 Chunk 实验配置：按标题语义切分，400-700 tokens、约 10% overlap；表格保留表头和行组；定义/限制/示例尽量同块。该配置不是事实，必须以检索评测调优。
-- Embedding/Rerank：线上主候选为国内 API `text-embedding-v3` 与国内托管的 `BAAI/bge-reranker-v2-m3`；国外模型只用于脱敏离线基准。最终按 Recall@K、MRR/nDCG、引用准确率、延迟和成本盲测定版，不规划私有化推理集群。
-- 元数据：`tenant_id`、`knowledge_type`、`platform`、`mmp`、`geo`、`os`、`locale`、`source_version`、`effective_at`、`expires_at`、`owner`、`review_status`、`permission_scope`、`customer_visible_allowed`、`retrieval_allowed`、`generation_allowed`、`evaluation_allowed`、`training_allowed`、`integrity_hash`。
-- 来源权威按主题裁决：内部指标/配置以内部 Owner 审核口径为准；平台政策以对应平台正式文档为准；MMP 规则以对应 MMP 正式文档为准；已审核案例只作上下文。同主题或跨主题冲突均保留原来源并转 Owner，不设置全局固定优先级。
+- 原文对象存储负责保真和审计；BM25 负责术语、ID 和数字表达；VectorDB 负责中英文近义问法；Reranker 只处理已经过 ACL 的候选。
+- 元数据至少包含：`tenant_id`、`knowledge_type`、`platform`、`mmp`、`geo`、`os`、`locale`、`source_version`、`effective_at`、`expires_at`、`owner`、`review_status`、`permission_scope`、四类用途授权和 `integrity_hash`。
+- 来源权威按主题裁决：内部指标/配置以内部 Owner 审核版本为准；平台规则以对应平台正式文档为准；MMP 规则以对应 MMP 正式文档为准。
+- 同主题、同适用范围和重叠有效期出现不同结构化值时标记冲突；不能结构化判定时并列来源并转 Owner，不设置跨主题的全局权威排序。
 
-#### 5.3.4 已审核案例库
+#### 5.3.5 已审核案例库
 
-- 存储：关系型 Case Store + 标签索引 + 向量索引。
-- 入库门槛：脱敏、`root_cause_status=confirmed` 或明确标注 unresolved、resolution 经 SME 审核、适用范围和失效条件完整。
-- 字段：`case_id`、`scenario`、`symptom`、`masked_entities`、`checks_performed`、`confirmed_or_candidate_cause`、`resolution`、`evidence_refs`、`quality_status`、`reviewer`、`applicability`、`expires_at`。
-- 使用边界：案例只生成检查提示；要支持当前 claim，仍需当前会话 Evidence Object。
+- 关系型 Case Store 保存 `case_id`、场景、症状、检查过程、候选/确认原因、解决动作、Evidence 引用、审核人、Applicability、质量状态和失效时间。
+- 标签索引用于平台、MMP、事件、地区和异常指标过滤；向量索引只用于语义相似场景。
+- 案例的 Resolution 不自动变成 SOP；重复出现的有效做法需由 SME 提炼、审核并作为新的 Operational SOP 发布。
 
-#### 5.3.5 实时/准实时工具与缓存
+#### 5.3.6 实时工具与 Evidence Store
 
-- 平台、MMP 与 postback 数据通过 4.5 的只读工具访问。
-- 缓存按租户、权限 hash、工具版本、查询参数隔离；缓存 TTL 由数据 Owner 按业务新鲜度配置。
-- 每个数据源发布 `freshness_sla` 与 `watermark`；`fresh/acceptable/stale` 由 observed_at、watermark 和场景 SLA 计算，不能由模型判断。`unknown` 不得支持当前数据型 confirmed claim。
-- Evidence Store 保存必要聚合值、查询参数、来源时间与 hash；原始敏感数据遵循源系统保留策略。
-- 任何快照都携带 `observed_at` 与 `retrieved_at`，避免把“读取时间”当“业务发生时间”。
+- 平台、MMP、Postback 和设备级事件数据通过 4.5 的 Canonical Tool Registry 访问，不复制进向量库。
+- 缓存按租户、权限 hash、工具版本和规范化查询参数隔离；TTL 由数据 Owner 按场景新鲜度配置。
+- 每个数据源发布 `freshness_sla` 与 `watermark`；`fresh/acceptable/stale/unknown` 由确定性规则计算。
+- Evidence Store 只保存完成诊断所需的聚合值、查询参数、来源时间、授权快照和完整性 hash；敏感原始日志遵循源系统保留策略。
+- `observed_at` 表示数据对应的业务时间，`retrieved_at` 表示系统读取时间，两者不得混用。
 
-### 5.4 检索与生成策略
+### 5.4 R&D 任务三：检索策略与 Agent 消费
 
-#### 5.4.1 Query 改写
+#### 5.4.1 Agent 与知识路径
 
-Query 改写属于知识检索 Workflow，不直接生成答案，也不改变总控已识别的用户意图。输出：
+| 调用方 | 检索输入 | 固定查询顺序 | 返回给 Agent 的内容 | 停止条件 |
+| --- | --- | --- | --- | --- |
+| 4.2 投放诊断 | 异常指标、Driver、异常维度、数据质量 | 指标规则精确查询 → SOP 混合检索 → 可选案例 | 指标口径、检查动作、Knowledge Evidence、案例提示 | 无权威 SOP 时保留数据诊断，不用案例补根因 |
+| 4.3 归因核对 | 事件、窗口、平台/MMP、九项状态 | 事件/映射规则精确查询 → 平台/MMP 文档 → 可选案例 | 窗口与映射版本、核查规则、冲突、案例提示 | 同范围规则冲突时 `citation_conflict` |
+| 4.4 独立知识问答 | 用户问题、允许 scope、locale、effective_at | Query Rewrite → 混合召回 → Rerank → 回答生成 | Citation、Applicability、常见误区、知识缺口 | 无权威引用时 `no_reliable_citation` |
+| 4.4 内部补证 | 4.2/4.3 的 `retrieval_seed` | 固定序列化 → 规则/文档/案例检索 | KnowledgeResult、CaseResult、EvidenceObject[] | 返回检索结果后停止，不调用回答模型 |
 
-```json
-{
-  "schema_version": "retrieval_plan_v2",
-  "original_query": "7 天点击归因窗口是什么意思？",
-  "normalized_topic": "click_attribution_window",
-  "entities": [],
-  "exact_terms": ["7 天", "点击归因窗口"],
-  "semantic_expansions": ["click-through attribution window"],
-  "knowledge_scopes": ["mmp_attribution_rules"],
-  "locale": "zh-CN",
-  "effective_at": "2026-07-11T00:00:00Z",
-  "must_include_metadata": ["source_version", "owner", "effective_at", "expires_at"],
-  "forbidden_scopes": ["other_tenant"]
-}
+#### 5.4.2 端到端知识数据流
+
+```mermaid
+flowchart LR
+  A["来源登记<br/>Owner + ACL + 用途"] --> B["原文不可变快照"]
+  B --> C{"资产分类"}
+  C -->|规则/配置| D["结构化解析与规则校验"]
+  C -->|权威文档| E["布局解析与层级 Chunk"]
+  C -->|已审核案例候选| F["脱敏与模板提取"]
+  D --> G["Owner / SME 审核"]
+  E --> G
+  F --> G
+  G --> H["Staging 存储与索引"]
+  H --> I["Golden + ACL + Injection<br/>Regression 门禁"]
+  I -->|通过| J["Active Manifest"]
+  I -->|失败| J1["修订或隔离"]
+  J --> K["ACL 前置的精确/混合检索"]
+  K --> L["Rerank + 冲突与有效期筛选"]
+  L --> M["KnowledgeChunk / CaseResult(cases)<br/>Knowledge Evidence"]
+  M --> N["4.2 / 4.3 / 4.4"]
+  N --> O["Citation + Trace + Badcase"]
+
+  classDef data fill:#E8F7EE,stroke:#2E8B57,color:#153D26;
+  classDef deterministic fill:#E8F1FF,stroke:#3B6FC4,color:#102A43;
+  classDef stop fill:#FDECEC,stroke:#C44B4B,color:#5A1F1F;
+  class A,B,C,D,E,F,H,J,K,M data;
+  class G,I,L,N,O deterministic;
+  class J1 stop;
 ```
 
-改写不得添加用户没有提供的客户、账户、配置或结论；所有扩展词保留来源并可审计。
+#### 5.4.3 合成示例：平台窗口规则从来源到引用
 
-#### 5.4.2 召回与重排
+以下为合成规划样例，用于说明中间资产如何关联，不代表 Platform-A 或 MMP-A 的真实规则。
 
-1. ACL、租户、审核状态、有效期预过滤。
-2. Exact/BM25 召回术语和 ID；向量召回语义近义问题。
-3. 合并去重，保留来源与版本。
-4. 重排综合语义相关、来源权威、版本新鲜、适用范围；不使用客户可见性替代权限。
-5. 运行冲突检测：同一 metric/config 在重叠有效期出现不同定义时标记冲突。
-6. 只把 Top-N 合格片段送入生成；N 为实验配置，按 token、召回与延迟校准。
+1. **来源登记：** 平台 Owner 提交 `doc_platform_window@5.0.0`，权威主题为 `platform_attribution_rule`，适用于 Platform-A，生效时间为 2024-11-01，仅允许内部检索和生成。
+2. **解析切分：** 系统定位“归因规则 > 点击窗口 > 7 天点击”章节，将规则、适用范围和例外保留在同一 Chunk；表格若存在则保留表头。
+3. **审核发布：** Owner 核对数字、版本、适用范围和 ACL，Staging 通过窗口问答、过期版本、跨租户和注入测试后，发布 `kb_doc_2024_12_20_01`。
+4. **在线检索：** 4.4 的 RetrievalPlan 在允许 scope 中搜索“Platform-A 7 天点击窗口”，ACL 前置过滤后召回 `chunk_platform_window_v5`。
+5. **证据投影：** Evidence Builder 令 `Knowledge Evidence.source_id=chunk_platform_window_v5`，Citation 保存原文档 ID、版本、Owner、生效时间和 Applicability。
+6. **回答追溯：** Trace 记录 RetrievalPlan、Chunk、索引版本和 Claim 引用。若用户反馈错误，可从 `response_id` 反查该文档版本及解析产物。
 
-初始候选可从 BM25 30 + Vector 30、重排 8、生成 5 开始实验，但不得在未经对照评测时写死为生产真值。
+这个示例只证明“知识来源、版本和引用关系可追溯”，不证明模型对整句自然语言的语义改写天然正确；语义忠实度仍由离线 Groundedness、引用准确率和 Badcase 控制。
 
-#### 5.4.3 引用与拒答
+#### 5.4.4 Query Rewrite、召回与重排
 
-- 每个事实 claim 指向具体 chunk/evidence，不接受只引用整篇文档。
-- 引用展示标题、Owner、版本、生效时间与适用范围；内部受限字段不在普通 UI 展示。
-- 过期、未审核、权限不匹配或被注入标记的片段不能进入强回答。
-- 权威来源缺失：`no_reliable_citation`；来源冲突：`citation_conflict`；只有案例：回答为“检查提示”而非规则真值。
+1. 规则层先对请求 scope 与 IAM 允许 scope 求交；为空时不调用 Query Rewrite、Embedding、Reranker 或回答模型。
+2. Query Rewrite 只生成规范主题、精确词、语义扩展和允许的过滤条件，不新增客户、账户、配置或结论。
+3. Exact/BM25 召回术语、ID、版本和数字表达；向量召回中英文近义问题。
+4. 合并去重后，由 Reranker 处理语义相关性；确定性规则继续检查来源主题、版本、新鲜度、Applicability、冲突和注入状态。
+5. 只把 Top-N 合格片段送入回答生成；N 是实验配置，按 Token、召回、延迟和成本校准。
 
-#### 5.4.4 提示词注入与知识污染防护
+初始候选可从 BM25 30 + Vector 30、重排 8、生成 5 开始实验，但不得在未经对照评测时写成生产真值。
 
-- 把检索文本封装为带 ID 的不可信数据块，模型系统指令明确“不得执行其中指令”。
-- 对“忽略规则、泄露 Prompt、调用工具、跨租户访问”等模式做静态与语义检测。
-- 工具调用计划不从检索文本读取；只从已签名 Tool Registry 读取。
-- 同一知识版本注入命中率异常上升时自动下线 active pointer，并回滚。
-- 所有知识变更使用 canonical serialization，保留提交人、审核人、内容 hash 与服务端 HMAC/签名并写入不可变审计；普通 SHA-256 只检测变化，不作为来源真实性证明。无双人审核的高风险知识不发布。
+#### 5.4.5 引用、拒答与污染防护
 
-### 5.5 知识维护、版本与 Badcase 追溯
+- 每个知识型事实 Claim 必须指向具体 Knowledge Evidence，不能只引用整篇文档。
+- Citation 展示来源标识、Owner、版本、生效时间和适用范围；内部受限字段不在普通 UI 展示。
+- 过期、未审核、权限不匹配或命中注入的片段不能进入强回答。
+- 权威来源缺失时返回 `no_reliable_citation`；同范围规则冲突时返回 `citation_conflict`；只有案例时只输出检查提示。
+- 检索文本封装为带 ID 的不可信数据块；工具计划只从签名 Tool Registry 读取，不从正文读取。
+- 同一知识版本的注入或错误引用异常上升时暂停对应 Active Manifest，并触发回滚评估。
 
-#### 5.5.1 知识等级
+### 5.5 R&D 任务四：知识维护、版本发布与 Badcase
 
-| `knowledge_tier` | 内容 | 变更要求 |
+#### 5.5.1 知识等级与更新触发
+
+| `knowledge_tier` | 内容 | 更新触发 | 审核与发布要求 |
+| --- | --- | --- | --- |
+| `critical_definition` | 指标公式、事件映射、归因窗口、权限和工具 Schema | 源系统/平台/MMP 规则变更 | 双人审核、全量规则与回归测试、可立即回滚 |
+| `operational_sop` | 投放/归因排查 SOP、平台操作规则 | SOP 修订、重复 Badcase、Owner 定期复核 | Owner + SME 审核、场景回归 |
+| `reviewed_case` | 脱敏、已审核案例 | 排障闭环后提交、适用范围变化 | SME 审核、证据状态和失效时间完整 |
+| `context_only` | 培训材料、非权威说明 | 运营维护 | 不可支持强 Claim，不进入 Critical 发布集 |
+
+平台/MMP 正式文档按内容归类：涉及指标、窗口或事件定义时进入 `critical_definition`；属于检查步骤或操作说明时进入 `operational_sop`。安全事件继续使用 `incident_severity=P0|P1|P2|P3`，不与知识等级复用。
+
+#### 5.5.2 审核与发布流程
+
+```text
+draft
+→ under_review
+→ approved
+→ staged
+→ released
+→ deprecated | rolled_back
+```
+
+- 运营/PM 提交草稿，但不能自审 Critical Definition。
+- Owner 核对事实、版本、适用范围和更新原因；安全团队核对 ACL、可见性、用途授权和脱敏。
+- Approved 只表示内容审核通过，不表示已经上线；必须进入 Staging 构建索引并运行发布门禁。
+- 发布操作生成新的不可变 Source/Chunk/Rule/Index 版本，不覆盖旧记录。
+- 下架或回滚后，旧版本不再被新请求使用，但历史 Trace 和 Evidence 仍保留原版本引用。
+
+#### 5.5.3 Active Manifest 与回滚
+
+- Active Manifest 按知识类型、平台/MMP、locale、租户可见范围和索引类型维护当前版本，避免用一个全局指针错误覆盖不同适用范围。
+- 发布时原子切换 Manifest；运行中请求固定使用进入 Workflow 时解析到的版本，避免同一回答混用新旧索引。
+- 回滚只把 Manifest 指回上一已验证版本，不删除问题版本；问题版本进入隔离状态，供复盘和差异分析。
+- Changelog 记录改动原因、提交人、审核人、来源 diff、关联 Badcase、评测结果、发布时间和回滚结果。
+- Trace 至少记录 `kb_version`、索引版本、Chunk/Case ID、规则版本和 Citation，确保回答可复现。
+
+#### 5.5.4 Badcase 追溯与修复分派
+
+追溯主链路：
+
+`response_id -> trace_id -> retrieval_plan -> retrieved_chunk_ids/case_ids -> source/index/rule versions -> Claim.proposed_evidence_ids -> badcase`。
+
+| 根因类型 | 典型问题 | 修复资产 |
 | --- | --- | --- |
-| `critical_definition` | 指标公式、事件映射、归因窗口、权限与工具 Schema | 双人审核 + 全量回归 + 可立即回滚 |
-| `operational_sop` | 投放/归因排查 SOP、平台规则 | Owner 审核 + 场景回归 |
-| `reviewed_case` | 脱敏、已确认的案例 | SME 审核 + 适用范围/失效时间 |
-| `context_only` | 培训材料、非权威说明 | 不可支持强 claim |
+| 来源内容错误或过期 | 官方规则已更新，知识仍为旧版本 | 下架/修订来源，发布新版本；严重时回滚 |
+| 解析或 Chunk 错误 | 表头丢失、规则与例外被拆开 | Parser、Chunk 策略和解析回归集 |
+| Query Rewrite 错误 | 主题或同义词扩展偏离原问题 | Query Rewrite Prompt、词典或固定模板 |
+| 召回缺失 | 正确 Chunk 未进入候选 | ACL/元数据过滤、BM25、Embedding 或索引 |
+| Rerank 错误 | 正确候选存在但排序过低 | Reranker、融合权重或 Applicability 特征 |
+| 引用不支持 Claim | Citation 存在但原文不支持表述 | 回答 Prompt、Workflow 结果校验和引用评测 |
+| 案例误用 | 历史案例被当作当前事实 | 案例分层、Prompt 和确定性用途限制 |
+| ACL 泄露 | 未授权 Chunk 被召回或展示 | 安全事件、立即阻断、回滚和权限修复 |
+| 生成语义错误 | 知识与引用正确但模型改写错误 | Prompt/模型回归；只有前述修复不足时才评估 SFT |
 
-安全事件使用 `incident_severity=P0|P1|P2|P3`，不与知识等级复用。
+Badcase 不能直接归为“模型幻觉”。必须先定位到来源、解析、检索、引用、规则或生成中的责任资产，再决定修复方式。
 
-#### 5.5.2 发布与回滚
+#### 5.5.5 知识运营与发布指标
 
-1. 每次发布生成不可变 `kb_version`、索引版本和 diff。
-2. Staging 运行检索、引用、冲突、注入、ACL 与 Regression Badcase Set。
-3. 通过后切换 active pointer；保留上一可用版本。
-4. 命中 Block 事件时回滚，并暂停受影响知识类型。
-5. Changelog 记录原因、Owner、关联 Badcase、评测与回滚结果。
+以下指标进入知识健康看板，并与第六部分发布门禁共用样本与版本：
 
-#### 5.5.3 Badcase 根因路径
+| 指标 | 初始门槛 | 用途 |
+| --- | ---: | --- |
+| Recall@5 | >= 85% | 检索 Golden Set；规划门槛，Phase 0/1 校准 |
+| 引用准确率 | >= 95% | 引用片段确实支持对应 Claim |
+| 无答案拒答率 | >= 95% | 无权威来源时不强答 |
+| 过期/未审核知识强引用率 | 0 | Block |
+| 跨租户知识泄露率 | 0 | Block |
+| Active Manifest 与 Trace 版本记录完整率 | 100% | 回答复现与回滚 |
+| Critical Definition 回滚演练成功率 | 100% | 发布前演练 |
+| 知识缺口任务有 Owner 比例 | 100% | 避免无责任人的长期缺口 |
 
-`response_id -> trace_id -> retrieval_plan -> retrieved_chunk_ids -> kb/index/version -> Claim.proposed_evidence_ids -> badcase`。
+### 5.6 V1 交付范围与研发验收
 
-根因分派：
+| 阶段 | 主要产物 | 退出条件 |
+| --- | --- | --- |
+| Phase 0：材料与基线 | Source Catalog、权限矩阵、指标/事件字典、首批平台/MMP 文档、检索 Golden Set | 每类核心资产有 Owner；允许用途和更新方式明确 |
+| Phase 1：单场景闭环 | 一个广告平台 + 一个 MMP 的规则库、权威文档索引、审核发布、Active Manifest 和回滚 | 归因窗口/事件映射可追溯；ACL、公式、引用和回滚门禁通过 |
+| Phase 2：双场景 MVP | 投放 SOP、指标树、已审核案例库、4.2/4.3 内部补证与 4.4 独立问答 | 投放与归因专用集达到 5.2.5/5.5.5 规划门槛 |
+| Phase 3：内部灰度 | 知识健康看板、Badcase 分派、知识缺口队列和定期回滚演练 | 版本、引用、缺口和修复可从 response_id 完整追溯 |
 
-- 知识内容错/过期：Owner 修订或下架。
-- Query 改写错：知识检索 Workflow 的 Query Rewrite Prompt/词典修复。
-- 召回缺失：索引、Chunk、Embedding 或过滤修复。
-- 重排错误：reranker/权重/适用范围修复。
-- 引用不支持 claim：对应 Agent 的生成 Prompt 或 Workflow 结果校验修复。
-- ACL 泄露：安全事件，立即阻断与回滚。
+V1 不建设 GraphDB，不自动抓取后直接发布，不让 LLM 自动生成公式或确认根因，也不把未审核工单加入权威索引。这些能力只有在真实数据和对照评测证明必要时再进入后续方案。
 
 <a id="part-6"></a>
-
 ## 第六部分：AI 评估框架、数据集与发布门禁
 
 ### 6.1 核心设计原则
