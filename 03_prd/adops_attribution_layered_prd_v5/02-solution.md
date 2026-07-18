@@ -278,7 +278,7 @@ flowchart TD
 | `C-01` | 总控、投放诊断、归因核对、知识检索、交付守卫均写完整职责、输入输出、Pipeline、选型理由、Prompt、Schema、兜底、评测与 Badcase |
 | `C-02` | 意图、必填字段、允许工具、最大调用数、超时、重试、停止条件和多意图规则可配置、可审计 |
 | `C-03` | 指标语义层实现版本化公式、零分母、时区、币种、数据新鲜度与跨源映射；LLM 不自行计算 |
-| `C-04` | Tool Registry 仅有 `get_platform_report`、`get_mmp_report`、`get_postback_summary`、`search_knowledge_base`、`search_similar_cases`，均只读 |
+| `C-04` | Tool Registry 仅有 `get_platform_report`、`get_mmp_report`、`get_postback_summary`、`get_attribution_event_logs`、`search_knowledge_base`、`search_similar_cases`，均只读 |
 | `C-05` | 每个工具有 JSON Schema、ACL、超时、重试、幂等、错误码、审计和 Evidence Object 转换规则 |
 | `C-06` | Evidence `source_type` 统一为 tool/knowledge/rule/reviewed_case/human；Claim `claim_type` 独立使用 observed_fact/derived_fact/candidate_cause/confirmed_cause/excluded_cause/pending_check；二者通过支持/反证关系连接 |
 | `C-07` | 权威知识、配置字典、工作流 DAG、案例和实时工具结果按形态分层；检索前权限过滤，发布可回滚 |

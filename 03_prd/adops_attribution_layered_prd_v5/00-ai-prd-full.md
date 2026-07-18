@@ -641,7 +641,7 @@ flowchart TD
 | --- | --- | --- | --- |
 | 总控 Agent | 请求路由器与范围守门员 | 路由正确、权限与范围、低延迟 | 不调用工具、不计算指标、不判断业务根因 |
 | 投放效果诊断 Agent | 指标链路解释器 | 数字忠实、证据绑定、验证动作可执行 | 不自行算数、不执行投放变更 |
-| 归因差异核对 Agent | 跨源口径对账器 | 先可比、再算差异、最后解释 | 不读设备级日志、不做责任归属 |
+| 归因差异核对 Agent | 跨源口径对账器 | 先可比、再算差异、最后解释 | 只读聚合数据与脱敏事件匹配结果；责任归属转人工 |
 | 知识与案例检索 Agent | 有权限和版本约束的知识回答器 | 权威引用、适用范围、无答案拒答 | 不分析具体账户、不把案例当成当前事实 |
 | 交付守卫 | 独立质量与安全闸门 | 权限安全、状态准确、失败可见 | 不补写业务事实、不改变上游数字与结论 |
 
@@ -1417,13 +1417,13 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 #### 4.3.3 详细 Pipeline
 
-**[任务接收与请求构造]（Task Intake & Request Assembly）：** 从 confirmed slots 读取 Campaign、App、MMP、事件、绝对时间范围、时区和归因视图，构造平台、MMP 与必要的 Postback 聚合只读请求；不重复判断 Owner 或执行准入。
+**[任务接收与请求构造]（Task Intake & Request Assembly）：** 从 confirmed slots 读取 Campaign、App、MMP、事件、绝对时间范围、时区和归因视图，构造平台、MMP、Postback 与归因事件日志只读请求。
 
-**[双源取数与规则补证]（Dual-source Retrieval & Rule Enrichment）：** 并行获取平台、MMP 和必要的 Postback 聚合结果，并由 4.4 检索当前有效的归因窗口、事件映射、渠道和隐私归因规则；任一主数据源缺失时进入部分证据分支。
+**[双源取数、事件匹配与 RAG 补证]（Dual-source Retrieval, Event Matching & RAG Enrichment）：** 并行获取平台、MMP 与 Postback 聚合结果；差异需要下钻时读取设备级归因事件日志并生成脱敏匹配结果；同时由 4.4 RAG 检索当前有效的归因窗口、事件映射、渠道与隐私归因规则。
 
 **[口径对齐、差异复算与九项核查]（Alignment, Gap Calculation & Checklist）：** 确定性规则对齐对象、绝对时间范围、时区、事件、归因窗口、视图和成熟度；仅在可比时复算差异，并生成固定九项状态。不可比时 `derived_differences=[]`，只输出原值与待对齐项。
 
-**[核对草稿生成]（Reconciliation Drafting）：** 模型只组织已经计算的两源事实、九项状态、候选问题、证据缺口和验证动作，不重新计算差异、不修改核查状态、不确认因果或责任。
+**[核对草稿生成]（Reconciliation Drafting）：** 模型根据差异计算、九项核查、RAG 规则上下文和 Evidence，生成候选问题、证据缺口与验证动作。
 
 **[结果校验、风险分流与返回]（Validation, Risk Handling & Return）：** 确定性系统校验 Schema、差异值、九项完整性、Evidence 与 Verification Event 范围；结算、赔偿、欺诈或责任归属转人工，其余草稿进入 4.5 交付守卫。
 
@@ -1451,15 +1451,18 @@ Badcase：`metric_value_mutated`、`formula_bypassed`、`zero_denominator_mishan
 
 ```mermaid
 flowchart TD
-  A["已准入任务<br/>route_final + confirmed slots"] --> B["请求构造<br/>Platform / MMP / Postback"]
+  A["已准入任务<br/>route_final + confirmed slots"] --> B["请求构造<br/>Platform / MMP / Postback / Event Logs"]
   B --> C1[["平台聚合报表<br/>install = 1120"]]
   B --> C2[["MMP 聚合报表<br/>install = 1080"]]
   B --> C3[["Postback 聚合<br/>delayed = 24, failed = 16"]]
-  A --> D["4.4 规则补证<br/>窗口、事件映射、渠道规则"]
+  B --> C4[["设备级事件匹配<br/>platform_only = 40"]]
+  A --> D["4.4 RAG 补证<br/>Rewrite → ACL → Recall → Rerank"]
+  D --> D1[["attribution_context<br/>窗口、事件映射、渠道规则"]]
   C1 --> E["Evidence Builder"]
   C2 --> E
   C3 --> E
-  D --> E
+  C4 --> E
+  D1 --> E
   E --> F["确定性对账规则<br/>可比性 Gate + 差异复算 + 九项核查"]
   F --> G{"关键口径可比？"}
   G -->|否| G1["not_comparable<br/>仅返回原值与待对齐项"]
@@ -1474,22 +1477,31 @@ flowchart TD
   classDef stop fill:#FDECEC,stroke:#C44B4B,color:#5A1F1F;
   class A,B,E,F,G,H,J,K deterministic;
   class D,I model;
-  class C1,C2,C3 data;
+  class C1,C2,C3,C4,D1 data;
   class G1 stop;
 ```
 
-**3. 双源取数、规则补证与 Evidence**
+**3. 双源取数、事件匹配、RAG 补证与 Evidence**
 
-Workflow 使用同一绝对 UTC 时间窗分别调用平台和 MMP 工具，并在核查 Postback 状态时使用 `aggregation=total`，避免日粒度时区边界再次引入歧义。工具与知识检索得到的合成结果如下：
+Workflow 使用同一绝对 UTC 时间窗调用平台、MMP 与 Postback 工具。聚合差异成立后，`get_attribution_event_logs` 在工具侧使用作用域内的 HMAC 事件键完成逐事件匹配；4.4 则把异常对象、事件和核查主题改写为检索计划，通过 ACL、混合召回和重排序返回有效规则。合成结果如下：
 
-| 结果 | 平台 | MMP / Postback | 说明 |
-| --- | ---: | ---: | --- |
-| install | 1,120 | 1,080 | 两源聚合原值 |
-| 数据新鲜度 | fresh | fresh | 达到对账门槛 |
-| 事件定义 | `install_metric_dict@2024-12` | `install_v3` | 由平台指标字典 Evidence 与 MMP 结果分别提供 |
-| 点击归因窗口 | 7 天 | 7 天 | 来自当前有效的版本化规则 Evidence |
-| Postback success | - | 1,080 | 聚合状态，不等于已归因安装明细 |
-| Postback delayed / failed | - | 24 / 16 | 数量与差值相近，但不能直接确认因果 |
+| 数据结果 | 本例值 | 说明 |
+| --- | ---: | --- |
+| 平台 / MMP install | 1,120 / 1,080 | 两源聚合原值，均为 fresh |
+| Postback success / delayed / failed | 1,080 / 24 / 16 | 同一绝对时间窗的状态汇总 |
+| 设备级事件匹配 | matched=1,080；platform_only=40 | 40 条平台事件在 MMP 侧未入账 |
+| platform_only 状态拆分 | delayed=24；failed=16 | 由脱敏事件匹配行按状态确定性汇总 |
+| 去重 / 重归因 | duplicate=0；reattributed=0 | 本例 40 条差异事件未命中这两类状态 |
+
+4.4 RAG 返回的 `attribution_context` 会作为 Prompt 的独立输入变量：
+
+| RAG 处理 | 本例内容 | 进入 Prompt 的结果 |
+| --- | --- | --- |
+| Query Rewrite | `C_DEMO_123 install 平台与 MMP 归因窗口、事件映射、渠道映射` | 结构化 `retrieval_plan_v2` |
+| Scope 与 ACL | `attribution_rules`、`event_mapping`、`channel_mapping` | 仅保留当前 tenant 可见、已审核且有效的文档 |
+| Recall 与 Rerank | 召回后按主题相关性、版本有效期和适用范围重排 | `KnowledgeResult.chunks` |
+| 规则投影 | 7 天点击窗口、install 映射、渠道映射版本 | `attribution_context` 与 Knowledge Evidence |
+| 冲突处理 | 本例 `conflicts=[]` | 有冲突时相应核查项进入 `needs_followup` |
 
 Evidence Builder 只做来源和范围投影，不判断根因：
 
@@ -1498,7 +1510,10 @@ Evidence Builder 只做来源和范围投影，不判断根因：
 | `ev_attr_platform_001` | 平台聚合工具 | 平台 install 原值与新鲜度 |
 | `ev_attr_mmp_001` | MMP 聚合工具 | MMP install 原值、事件版本与成熟度 |
 | `ev_attr_postback_001` | Postback 聚合工具 | success/delayed/failed 计数 |
-| `ev_attr_rules_001` | 权威知识 | 平台指标字典、事件映射与窗口规则 |
+| `ev_attr_event_match_001` | 设备级归因事件日志工具 | 40 条脱敏事件匹配结果及状态汇总 |
+| `ev_attr_rules_001` | 4.4 Knowledge Evidence | 7 天点击窗口与适用范围 |
+| `ev_attr_rules_002` | 4.4 Knowledge Evidence | 平台/MMP install 事件映射版本 |
+| `ev_attr_rules_003` | 4.4 Knowledge Evidence | 渠道映射口径与生效版本 |
 | `ev_attr_gap_001` | 对账规则层 | 版本化差异复算结果 |
 
 `SourceObservation.source_id` 必须填写对应 `EvidenceObject.evidence_id`，以便从差异结果追溯到原始来源。
@@ -1530,18 +1545,30 @@ directional_gap_rate = (1120 - 1080) / 1080 = 3.7037%（分母=MMP）
 | `timezone` | matched | 两源已使用相同绝对时间窗与展示时区 |
 | `attribution_window` | matched | 当前有效规则均为 7 天点击窗口 |
 | `event_mapping` | matched | 平台指标字典与 MMP mapping 均映射到 install |
-| `dedup_or_reattribution` | needs_followup | 聚合工具不能证明逐事件去重或重归因状态 |
-| `postback_delay_or_failure` | likely_issue | delayed + failed 为 40，需进一步核查 |
+| `dedup_or_reattribution` | matched | 40 条差异事件已逐条核对，未命中 duplicate 或 reattributed |
+| `postback_delay_or_failure` | likely_issue | 40 条 platform_only 事件与 delayed/failed 状态逐条对应 |
 | `data_freshness` | matched | 两源均达到成熟门槛 |
-| `channel_mapping` | needs_followup | 仍需核对渠道映射明细 |
+| `channel_mapping` | matched | RAG 返回当前渠道映射版本，事件匹配行均通过该版本校验 |
 | `privacy_attribution` | not_supported | V1 当前证据不支持判断；如需判断须补充 SAN/SKAN 或 privacy mode 范围证据 |
 | `invalid_traffic` | not_supported | V1 聚合工具不提供无效流量结论 |
 
-`delayed + failed = 40` 只是与缺口数量相近的聚合相关性。重试、去重、跨窗入账和 MMP 接收状态尚未一一对应，因此只能形成 `candidate_cause`，不能生成 `confirmed_cause`。
+本例通过设备级事件匹配建立了 40 条差异事件与 delayed/failed 状态的对应关系，因此该方向获得了逐事件证据；正式确认仍需有效的 Verification Event。
 
 **6. Prompt 装配与核对草稿**
 
-Prompt Assembler 只把七个已声明变量交给模型，不传 confirmed slots、原始 ToolEnvelope、token、device ID 或设备级日志。下例可直接通过 `AgentDraft` Schema；九项状态由规则层给出，模型只负责组织说明：
+Prompt Assembler 交付以下七个变量。RAG 内容通过 `attribution_context` 显式进入 Prompt，设备级日志则以脱敏 Evidence 进入 `evidence_objects`：
+
+| Prompt 变量 | 本例内容 |
+| --- | --- |
+| `route_final` | 已授权的 `attribution_discrepancy_check` 路由与只读工具范围 |
+| `user_query` | 用户原始问题 |
+| `comparability_result` | 两源原值、口径检查和三项版本化差异结果 |
+| `checklist_result` | 规则层生成的固定九项状态 |
+| `attribution_context` | 4.4 RAG 返回的 7 天窗口、install 事件映射、渠道映射版本及 `conflicts=[]` |
+| `evidence_objects` | 平台、MMP、Postback、脱敏事件匹配、Knowledge Evidence 与差异计算 Evidence |
+| `verification_events` | 本例为空；存在有效人工验证时可支撑 `confirmed_cause` |
+
+下例可直接通过 `attribution_diagnosis_draft_v2` Schema：
 
 ```json
 {
@@ -1581,11 +1608,11 @@ Prompt Assembler 只把七个已声明变量交给模型，不传 confirmed slot
   "checklist": [
     {"item": "timezone", "status": "matched", "evidence_ids": ["ev_attr_platform_001", "ev_attr_mmp_001"], "explanation": "两源绝对时间窗和展示时区一致。"},
     {"item": "attribution_window", "status": "matched", "evidence_ids": ["ev_attr_rules_001"], "explanation": "两源当前有效点击窗口均为 7 天。"},
-    {"item": "event_mapping", "status": "matched", "evidence_ids": ["ev_attr_rules_001", "ev_attr_mmp_001"], "explanation": "两源均映射到 install。"},
-    {"item": "dedup_or_reattribution", "status": "needs_followup", "evidence_ids": [], "explanation": "聚合结果无法证明逐事件去重与重归因。"},
-    {"item": "postback_delay_or_failure", "status": "likely_issue", "evidence_ids": ["ev_attr_postback_001"], "explanation": "delayed 与 failed 合计 40，需要核对是否与未入账事件对应。"},
+    {"item": "event_mapping", "status": "matched", "evidence_ids": ["ev_attr_rules_002", "ev_attr_mmp_001"], "explanation": "两源均映射到 install。"},
+    {"item": "dedup_or_reattribution", "status": "matched", "evidence_ids": ["ev_attr_event_match_001"], "explanation": "40 条差异事件未命中 duplicate 或 reattributed。"},
+    {"item": "postback_delay_or_failure", "status": "likely_issue", "evidence_ids": ["ev_attr_postback_001", "ev_attr_event_match_001"], "explanation": "40 条 platform_only 事件逐条对应 delayed 或 failed 状态。"},
     {"item": "data_freshness", "status": "matched", "evidence_ids": ["ev_attr_platform_001", "ev_attr_mmp_001"], "explanation": "两源均已达到成熟门槛。"},
-    {"item": "channel_mapping", "status": "needs_followup", "evidence_ids": [], "explanation": "需要数据 Owner 进一步核对渠道映射。"},
+    {"item": "channel_mapping", "status": "matched", "evidence_ids": ["ev_attr_rules_003", "ev_attr_event_match_001"], "explanation": "当前渠道映射版本与事件匹配行一致。"},
     {"item": "privacy_attribution", "status": "not_supported", "evidence_ids": [], "explanation": "V1 当前证据不支持判断；如需判断须补充 SAN/SKAN 或 privacy mode 范围证据。"},
     {"item": "invalid_traffic", "status": "not_supported", "evidence_ids": [], "explanation": "V1 聚合工具不支持无效流量判断。"}
   ],
@@ -1612,33 +1639,34 @@ Prompt Assembler 只把七个已声明变量交给模型，不传 confirmed slot
     {
       "claim_id": "cl_attr_postback_candidate_001",
       "claim_type": "candidate_cause",
-      "statement": "Postback 延迟或失败是需要优先验证的差异方向。",
+      "statement": "40 条平台侧差异事件均在脱敏事件匹配结果中对应 delayed 或 failed 状态，Postback 链路是需要优先验证的差异方向。",
       "verification_status": "pending",
       "derivation": null,
       "verification_event_id": null,
-      "proposed_evidence_ids": ["ev_attr_postback_001"],
-      "counter_evidence_or_gap": ["聚合计数不能证明 40 条 Postback 与 40 个 MMP 缺口一一对应。"],
-      "verification_action": "核对同一时间窗的重试状态、MMP 接收汇总和去重结果。",
+      "proposed_evidence_ids": ["ev_attr_postback_001", "ev_attr_event_match_001"],
+      "counter_evidence_or_gap": ["尚无有效 Verification Event 将该候选方向确认成最终根因。"],
+      "verification_action": "复核 40 条脱敏事件匹配结果，并由归因数据 Owner 提交 Verification Event。",
       "owner": "attribution_data_owner"
     }
   ],
   "next_actions": [
     {
-      "action": "核对 Postback 重试、接收和去重汇总",
+      "action": "复核设备级事件匹配结果并确认 Postback 候选方向",
       "action_type": "check",
       "owner": "attribution_data_owner",
       "precondition": "保持同一 Campaign、事件和绝对时间窗",
-      "expected_evidence": ["Postback 状态汇总", "MMP 接收汇总", "去重计数"],
-      "completion_condition": "能够确认、排除或继续保留 Postback 候选方向"
+      "expected_evidence": ["脱敏事件匹配明细", "Postback 状态", "MMP 接收状态", "Verification Event"],
+      "completion_condition": "归因数据 Owner 提交确认或排除该方向的 Verification Event"
     }
   ],
-  "limitations": ["V1 不读取设备级日志，无法逐事件建立 Postback 与安装缺口的一一对应关系。"],
+  "limitations": [],
   "requires_human_review": false,
   "badcase_tags": []
 }
 ```
 
 若模型修改任一差异值、漏掉或重复九项、引用不存在的 Evidence，草稿校验失败，不进入交付守卫。结算、赔偿、欺诈或责任归属请求直接转人工。
+
 
 #### 4.3.4 模型参与边界
 
@@ -1674,13 +1702,14 @@ Prompt Assembler 只把七个已声明变量交给模型，不传 confirmed slot
 - attribution_context: {{attribution_context}}
 - evidence_objects: {{evidence_objects}}
 - verification_events: {{verification_events}}
+- attribution_rules_rag: {{attribution_context.attribution_rules}}
 
 要求：
 - 原样保留两源数值、对象、事件、时间窗、时区、窗口和新鲜度。
 - comparability_result.is_comparable=false 时只说明“原始数值不同但尚不可比”，列出待对齐项，并保持 derived_differences=[]。
 - comparable=true 时只复制 comparability_result 中的差异；九项 checklist 必须逐项复制 checklist_result，不得增删条目或修改状态。
 - likely_issue 使用 ChecklistItem.evidence_ids；candidate_cause 使用 Claim.proposed_evidence_ids，并附验证动作与 owner。Evidence ID 只是可追溯引用，不表示已确认因果，也不得归责任何一方。
-- 不读取或请求 raw postback URL、token、device ID 与设备级日志；结算、赔偿、欺诈或责任问题设置 requires_human_review=true。
+- 不读取或请求 raw postback URL、token、未脱敏 device ID 与 raw 设备日志；在授权与脱敏策略允许时可读取设备级逐事件日志继续核对 Postback 与缺口映射；结算、赔偿、欺诈或责任问题设置 requires_human_review=true。
 - confirmed_cause 只能复制已有有效 Verification Event；只输出 attribution_diagnosis_draft_v2 JSON。
 
 正常示例：两源同口径且差异已复算 => 复述差异、完整九项状态和候选验证动作。
@@ -4655,4 +4684,4 @@ A.6 中两个 `integrity_hash` 可独立复算：使用非秘密演示 key `synt
 }
 ```
 
-JSON Schema 之外仍需代码不变量：时间窗 start < end；查询涉及 spend/revenue 等货币指标时 `currency` 必须为非空 ISO 4217，纯计数查询可为 `null`；工具名与 result 类型匹配；`status=permission_denied` 时 result=null；`source_type=reviewed_case` 只能补充候选检查方向且不能成为候选原因的唯一证据；`derived_fact` 必须有 Derivation；`confirmed_cause` 必须有有效 VerificationEvent；归因草稿和 `AttributionDeliveryContent` 的九个 Checklist item 必须各出现一次；`ComparabilityResult.is_comparable=false` 时不得有 derived difference。Delivery 严格按 4.6.4 首个命中规则裁决，只有未命中更高优先级条件时 `requires_human_review=true` 才映射为 `human_review_required`；`delivery_payload_v3.content` 必须与来源 AgentDraft 类型一致且无损投影；PolicyGuard 与 Delivery 的状态、允许 Claim 集合和人审字段必须一致；所有最终候选原因必须通过 Evidence ID、范围、数字与 Claim 类型校验；Evidence 的 tenant/policy/auth snapshot 必须与当前交付时授权一致。`EvidenceClaimBundle` 还必须由代码验证引用完整性：Claim.proposed_evidence_ids、Derivation.input_evidence_ids 与 VerificationEvent.verification_evidence_ids 全部存在于同一 bundle；VerificationEvent 的 claim ID、tenant、对象 scope 与时间窗必须和 Claim/当前请求一致，禁止跨 bundle、跨租户、跨 Campaign 或跨时间范围拼接合法 Evidence。
+JSON Schema 之外仍需代码不变量：时间窗 start < end；查询涉及 spend/revenue 等货币指标时 `currency` 必须为非空 ISO 4217，纯计数查询可为 `null`；工具名与 result 类型匹配；`status=permission_denied` 时 result=null；`source_type=reviewed_case` 只能补充候选检查方向且不能成为候选原因的唯一证据；`derived_fact` 必须有 Derivation；`confirmed_cause` 必须有有效 VerificationEvent；归因草稿和 `AttributionDeliveryContent` 的九个 Checklist item 必须各出现一次；`ComparabilityResult.is_comparable=false` 时不得有 derived difference。Delivery 严格按 4.6.4 首个命中规则裁决，只有未命中更高优先级条件时 `requires_human_review=true` 才映射为 `human_review_required`；`delivery_payload_v3.content` 必须与来源 AgentDraft 类型一致且无损投影；PolicyGuard 与 Delivery 的状态、允许 Claim 集合和人审字段必须一致；所有最终候选原因必须通过 Evidence ID、范围、数字与 Claim 类型校验；Evidence 的 tenant/policy/auth snapshot 必须与当前交付时授权一致。`EvidenceClaimBundle` 还必须由代码验证引用完整性：Claim.proposed_evidence_ids、Derivation.input_evidence_ids 与 VerificationEvent.verification_evidence_ids 全部存在于同一 bundle；VerificationEvent 的 claim ID、tenant、对象 scope 与时间窗必须和 Claim/当前请求一致，禁止跨 bundle、跨租户、跨 Campaign 或跨时间范围拼接合法 Evidence。`r`n
