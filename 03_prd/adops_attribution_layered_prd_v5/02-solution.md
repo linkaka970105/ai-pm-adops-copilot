@@ -83,7 +83,7 @@ flowchart TD
   RET --> ES[证据存储]
   SEM --> ES
   ES --> SYN[子 Agent 解释与结果校验]
-  SYN --> OUT[统一响应封装<br/>内部诊断卡/升级摘要/降级结果]
+  SYN --> OUT[内部诊断卡/升级摘要/降级结果]
   OUT --> FB[反馈与 Badcase]
   FB --> EVAL[评测/修复/回归/发布]
 ```
@@ -95,7 +95,7 @@ flowchart TD
 3. 工具网关执行权限与参数校验；LLM 永远不直接连接数据库。
 4. 语义层计算公式、差异、贡献与数据质量状态。
 5. 子 Agent 只在 Evidence Object 范围内组织解释。
-6. 各业务 Workflow 在返回前完成结果校验，确定性响应层只映射交付状态并封装前端对象。
+6. 各业务 Workflow 在返回前完成结果校验，并按公共 Delivery 状态合同返回结果。
 7. JudgeAI 是离线/抽检辅助，不是在线唯一安全门。
 
 ### 3.2 用户核心意图
@@ -230,7 +230,7 @@ flowchart TD
   E -- 充分 --> R[ready]
 ```
 
-`workflow_state` 只描述执行进度；`delivery_state` 只描述用户最终收到的结果。所有部分失败也必须经过 `validating`，二者不得混用。唯一裁决顺序以实现层 4.6.4 为准：权限、范围、澄清、系统失败优先于人审，人审优先于工具/证据降级。
+`workflow_state` 只描述执行进度；`delivery_state` 只描述用户最终收到的结果。所有部分失败也必须经过 `validating`，二者不得混用。唯一裁决顺序以实现层 4.5.4 为准：权限、范围、澄清、系统失败优先于人审，人审优先于工具/证据降级。
 
 #### 3.3.7 结论与诊断卡合同
 
@@ -273,7 +273,7 @@ flowchart TD
 
 | 约束 ID | 实现层必须落地 |
 | --- | --- |
-| `C-01` | 总控、投放诊断、归因核对、知识检索均写完整职责、输入输出、Pipeline、选型理由、Prompt、Schema、兜底、评测与 Badcase；统一响应封装只保留确定性状态与前端合同 |
+| `C-01` | 总控、投放诊断、归因核对、知识检索均写完整职责、输入输出、Pipeline、选型理由、Prompt、Schema、兜底、评测与 Badcase |
 | `C-02` | 意图、必填字段、允许工具、最大调用数、超时、重试、停止条件和多意图规则可配置、可审计 |
 | `C-03` | 指标语义层实现版本化公式、零分母、时区、币种、数据新鲜度与跨源映射；LLM 不自行计算 |
 | `C-04` | Tool Registry 仅有 `get_platform_report`、`get_mmp_report`、`get_postback_summary`、`get_attribution_event_logs`、`search_knowledge_base`、`search_similar_cases`，均只读 |
