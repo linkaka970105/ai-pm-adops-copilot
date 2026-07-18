@@ -82,9 +82,8 @@ flowchart TD
   TG --> SEM[指标语义层与规则计算]
   RET --> ES[证据存储]
   SEM --> ES
-  ES --> SYN[子 Agent 解释]
-  SYN --> GUARD[交付守卫]
-  GUARD --> OUT[内部诊断卡/升级摘要/降级结果]
+  ES --> SYN[子 Agent 解释与结果校验]
+  SYN --> OUT[统一响应封装<br/>内部诊断卡/升级摘要/降级结果]
   OUT --> FB[反馈与 Badcase]
   FB --> EVAL[评测/修复/回归/发布]
 ```
@@ -96,7 +95,7 @@ flowchart TD
 3. 工具网关执行权限与参数校验；LLM 永远不直接连接数据库。
 4. 语义层计算公式、差异、贡献与数据质量状态。
 5. 子 Agent 只在 Evidence Object 范围内组织解释。
-6. 交付守卫不新增结论，只过滤、降级、决定交付状态。
+6. 各业务 Workflow 在返回前完成结果校验，确定性响应层只映射交付状态并封装前端对象。
 7. JudgeAI 是离线/抽检辅助，不是在线唯一安全门。
 
 ### 3.2 用户核心意图
@@ -145,8 +144,7 @@ flowchart TD
 6. 贡献拆解：比较当前期/基线期，并按 geo、os、placement、creative 等允许维度计算贡献；不把贡献直接命名为根因。
 7. 知识/案例辅助：检索指标口径、SOP 和已审核案例；案例只能提供检查方向。
 8. 生成分层结论：已观察事实、确定性计算、候选原因、待验证项；确认/排除原因还需独立验证凭据；候选原因必须包含支持证据、反证/缺口与验证动作。
-9. 交付守卫：审查数值忠实、证据、写操作建议、客户可见和交付状态。
-10. 返回内部诊断卡；用户反馈进入 Badcase 或继续核查。
+9. 结果校验与返回：校验数值、证据和风险条件，按统一状态映射封装内部诊断卡；用户反馈进入 Badcase 或继续核查。
 
 停止条件：数据不足以比较、关键工具失败、跨源口径不可比、权限不足或出现高风险责任判断时，不继续“猜原因”。
 
@@ -182,8 +180,8 @@ flowchart TD
 
 #### 3.3.4 人工升级与 Badcase 回流
 
-1. 触发条件：用户主动升级、交付守卫要求人工、工具/权限/证据冲突、路由歧义、证据不足或用户判定无效。
-2. 升级摘要工作流只使用现有 trace：问题、字段、已调用工具、已观察事实、计算、已查/未查项、冲突、建议 owner 与风险；交付守卫只是 processor，不是共同 Owner。
+1. 触发条件：用户主动升级、业务 Workflow 命中人工条件、工具/权限/证据冲突、路由歧义、证据不足或用户判定无效。
+2. 升级摘要工作流只使用现有 trace：问题、字段、已调用工具、已观察事实、计算、已查/未查项、冲突、建议 owner 与风险。
 3. Badcase 自动绑定 `trace_id`、响应、用户反馈和 Prompt/模型/工作流/工具/知识/规则版本。
 4. 分派到知识、检索、工具、指标语义、Prompt、工作流、权限、安全或产品边界责任队列。
 5. SME 给根因与修复；任何对知识库的回流必须先脱敏、审核、标记适用范围和有效期。
@@ -201,10 +199,10 @@ stateDiagram-v2
   authorized --> planning
   planning --> collecting_evidence
   collecting_evidence --> calculating: 有可计算证据
-  collecting_evidence --> guarding: 工具失败/仅部分证据
+  collecting_evidence --> validating: 工具失败/仅部分证据
   calculating --> synthesizing
-  synthesizing --> guarding
-  guarding --> completed: 已生成唯一交付状态
+  synthesizing --> validating
+  validating --> completed: 已生成唯一交付状态
   blocked --> completed: 阻断原因交付
   completed --> [*]
 ```
@@ -213,7 +211,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart TD
-  G[交付守卫] --> P{权限通过?}
+  G[确定性状态映射] --> P{权限通过?}
   P -- 否 --> PB[permission_blocked]
   P -- 是 --> O{范围内?}
   O -- 否 --> OS[out_of_scope]
@@ -232,7 +230,7 @@ flowchart TD
   E -- 充分 --> R[ready]
 ```
 
-`workflow_state` 只描述执行进度；`delivery_state` 只描述用户最终收到的结果。所有部分失败也必须经过 `guarding`，二者不得混用。唯一裁决顺序以实现层 4.6.4 为准：权限、范围、澄清、系统失败优先于人审，人审优先于工具/证据降级。
+`workflow_state` 只描述执行进度；`delivery_state` 只描述用户最终收到的结果。所有部分失败也必须经过 `validating`，二者不得混用。唯一裁决顺序以实现层 4.6.4 为准：权限、范围、澄清、系统失败优先于人审，人审优先于工具/证据降级。
 
 #### 3.3.7 结论与诊断卡合同
 
@@ -275,14 +273,14 @@ flowchart TD
 
 | 约束 ID | 实现层必须落地 |
 | --- | --- |
-| `C-01` | 总控、投放诊断、归因核对、知识检索、交付守卫均写完整职责、输入输出、Pipeline、选型理由、Prompt、Schema、兜底、评测与 Badcase |
+| `C-01` | 总控、投放诊断、归因核对、知识检索均写完整职责、输入输出、Pipeline、选型理由、Prompt、Schema、兜底、评测与 Badcase；统一响应封装只保留确定性状态与前端合同 |
 | `C-02` | 意图、必填字段、允许工具、最大调用数、超时、重试、停止条件和多意图规则可配置、可审计 |
 | `C-03` | 指标语义层实现版本化公式、零分母、时区、币种、数据新鲜度与跨源映射；LLM 不自行计算 |
 | `C-04` | Tool Registry 仅有 `get_platform_report`、`get_mmp_report`、`get_postback_summary`、`get_attribution_event_logs`、`search_knowledge_base`、`search_similar_cases`，均只读 |
 | `C-05` | 每个工具有 JSON Schema、ACL、超时、重试、幂等、错误码、审计和 Evidence Object 转换规则 |
 | `C-06` | Evidence `source_type` 统一为 tool/knowledge/rule/reviewed_case/human；Claim `claim_type` 独立使用 observed_fact/derived_fact/candidate_cause/confirmed_cause/excluded_cause/pending_check；二者通过支持/反证关系连接 |
 | `C-07` | 权威知识、配置字典、工作流 DAG、案例和实时工具结果按形态分层；检索前权限过滤，发布可回滚 |
-| `C-08` | Prompt 明文覆盖总控、三个子 Agent、交付守卫和各关键 Judge；不得只给结构或占位符 |
+| `C-08` | Prompt 明文覆盖总控、三个子 Agent 和各关键 Judge；不得只给结构或占位符 |
 | `C-09` | 评测覆盖路由、检索、工具/计算、诊断、安全、性能、成本；Block 门槛失败不得灰度 |
 | `C-10` | Badcase 能从 response_id 追到完整版本与根因资产，修复后必须进入回归集 |
 | `C-11` | 前端不得把 `partial_evidence`、`citation_conflict` 或 `human_review_required` 渲染成成功结论 |
